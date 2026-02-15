@@ -656,6 +656,19 @@ namespace spartan
             "GetBoostPressure",             &Physics::GetBoostPressure,
             "GetBoostMaxPressure",          &Physics::GetBoostMaxPressure,
 
+            "SetDrsEnabled",                &Physics::SetDrsEnabled,
+            "GetDrsEnabled",                &Physics::GetDrsEnabled,
+            "SetDrsActive",                 &Physics::SetDrsActive,
+            "GetDrsActive",                 &Physics::GetDrsActive,
+
+            "SetDiffType",                  &Physics::SetDiffType,
+            "GetDiffType",                  &Physics::GetDiffType,
+            "GetDiffTypeName",              &Physics::GetDiffTypeName,
+
+            "GetWheelWear",                 &Physics::GetWheelWear,
+            "GetWheelWearGripFactor",       &Physics::GetWheelWearGripFactor,
+            "ResetTireWear",                &Physics::ResetTireWear,
+
             "SetManualTransmission",        &Physics::SetManualTransmission,
             "GetManualTransmission",        &Physics::GetManualTransmission,
             "ShiftUp",                      &Physics::ShiftUp,
@@ -1775,6 +1788,75 @@ namespace spartan
         if (m_body_type != BodyType::Vehicle)
             return 0.0f;
         return car::get_boost_max_pressure();
+    }
+
+    // drs
+    void Physics::SetDrsEnabled(bool enabled)
+    {
+        if (m_body_type == BodyType::Vehicle)
+            car::set_drs_enabled(enabled);
+    }
+
+    bool Physics::GetDrsEnabled() const
+    {
+        if (m_body_type != BodyType::Vehicle)
+            return false;
+        return car::get_drs_enabled();
+    }
+
+    void Physics::SetDrsActive(bool active)
+    {
+        if (m_body_type == BodyType::Vehicle)
+            car::set_drs_active(active);
+    }
+
+    bool Physics::GetDrsActive() const
+    {
+        if (m_body_type != BodyType::Vehicle)
+            return false;
+        return car::get_drs_active();
+    }
+
+    // differential
+    void Physics::SetDiffType(int type)
+    {
+        if (m_body_type == BodyType::Vehicle)
+            car::set_diff_type(type);
+    }
+
+    int Physics::GetDiffType() const
+    {
+        if (m_body_type != BodyType::Vehicle)
+            return 2;
+        return car::get_diff_type();
+    }
+
+    const char* Physics::GetDiffTypeName() const
+    {
+        if (m_body_type != BodyType::Vehicle)
+            return "N/A";
+        return car::get_diff_type_name();
+    }
+
+    // tire wear
+    float Physics::GetWheelWear(WheelIndex wheel) const
+    {
+        if (m_body_type != BodyType::Vehicle)
+            return 0.0f;
+        return car::get_wheel_wear(static_cast<int>(wheel));
+    }
+
+    float Physics::GetWheelWearGripFactor(WheelIndex wheel) const
+    {
+        if (m_body_type != BodyType::Vehicle)
+            return 1.0f;
+        return car::get_wheel_wear_grip_factor(static_cast<int>(wheel));
+    }
+
+    void Physics::ResetTireWear()
+    {
+        if (m_body_type == BodyType::Vehicle)
+            car::reset_tire_wear();
     }
 
     void Physics::SetManualTransmission(bool enabled)

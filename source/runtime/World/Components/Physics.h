@@ -214,6 +214,22 @@ namespace spartan
         float GetBoostPressure() const;                         // current boost pressure (bar)
         float GetBoostMaxPressure() const;                      // max boost pressure (bar)
 
+        // drs (drag reduction system)
+        void SetDrsEnabled(bool enabled);
+        bool GetDrsEnabled() const;
+        void SetDrsActive(bool active);
+        bool GetDrsActive() const;
+
+        // differential type (0 = open, 1 = locked, 2 = lsd)
+        void SetDiffType(int type);
+        int  GetDiffType() const;
+        const char* GetDiffTypeName() const;
+
+        // tire wear
+        float GetWheelWear(WheelIndex wheel) const;            // 0-1, 0 = new, 1 = destroyed
+        float GetWheelWearGripFactor(WheelIndex wheel) const;  // grip multiplier from wear
+        void  ResetTireWear();
+
         // transmission mode
         void SetManualTransmission(bool enabled);
         bool GetManualTransmission() const;

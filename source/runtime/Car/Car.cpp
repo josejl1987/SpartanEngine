@@ -1592,6 +1592,26 @@ namespace spartan
 
             ImGui::Separator();
 
+            // car preset selector
+            ImGui::SetNextItemWidth(220);
+            if (ImGui::BeginCombo("Car Preset", car::tuning::spec.name))
+            {
+                for (int i = 0; i < car::preset_count; i++)
+                {
+                    bool is_selected = (i == car::active_preset_index);
+                    if (ImGui::Selectable(car::preset_registry[i].name, is_selected))
+                    {
+                        car::active_preset_index = i;
+                        car::load_car(car::preset_registry[i].factory());
+                    }
+                    if (is_selected)
+                        ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+
+            ImGui::Separator();
+
             // driver assists
             bool abs_enabled = physics->GetAbsEnabled();
             bool tc_enabled  = physics->GetTcEnabled();
@@ -1629,6 +1649,27 @@ namespace spartan
                 ImGui::SameLine();
                 ImGui::TextColored(boost > 0.5f ? ImVec4(0.3f, 1, 0.3f, 1) : ImVec4(0.7f, 0.7f, 0.7f, 1), "%.2f bar", boost);
             }
+
+            bool drs_enabled = physics->GetDrsEnabled();
+            if (ImGui::Checkbox("DRS", &drs_enabled))
+                physics->SetDrsEnabled(drs_enabled);
+            if (drs_enabled)
+            {
+                bool drs_active = physics->GetDrsActive();
+                ImGui::SameLine();
+                if (drs_active)
+                    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1), "OPEN");
+                else
+                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1), "closed");
+            }
+
+            // differential type selector
+            ImGui::SameLine(140);
+            int diff_type = physics->GetDiffType();
+            const char* diff_items[] = { "Open", "Locked", "LSD" };
+            ImGui::SetNextItemWidth(80);
+            if (ImGui::Combo("Diff", &diff_type, diff_items, 3))
+                physics->SetDiffType(diff_type);
 
             if (physics->GetVehicleHandbrake() > 0.1f)
             {
@@ -1951,7 +1992,42 @@ namespace spartan
                 const ImU32 color_slip_angle = IM_COL32(255, 200, 100, 255);  // orange - slip angle
                 const ImU32 color_slip_ratio = IM_COL32(200, 100, 255, 255);  // purple - slip ratio
 
-                // helper: draw a tire with force arrows
+                // gt-style wear color: blue (0% wear, perfect) -> green (40%, ok) -> red (100%, destroyed)
+                auto get_wear_color = [](float wear) -> ImU32
+                {
+                    // clamp and compute color bands
+                    wear = std::clamp(wear, 0.0f, 1.0f);
+                    
+                    int r, g, b;
+                    if (wear < 0.4f)
+                    {
+                        // blue -> green (0% to 40%)
+                        float t = wear / 0.4f;
+                        r = static_cast<int>(30  + t * (50  - 30));
+                        g = static_cast<int>(80  + t * (200 - 80));
+                        b = static_cast<int>(220 + t * (80  - 220));
+                    }
+                    else if (wear < 0.7f)
+                    {
+                        // green -> yellow/orange (40% to 70%)
+                        float t = (wear - 0.4f) / 0.3f;
+                        r = static_cast<int>(50  + t * (220 - 50));
+                        g = static_cast<int>(200 + t * (160 - 200));
+                        b = static_cast<int>(80  + t * (30  - 80));
+                    }
+                    else
+                    {
+                        // orange -> red (70% to 100%)
+                        float t = (wear - 0.7f) / 0.3f;
+                        r = static_cast<int>(220 + t * (200 - 220));
+                        g = static_cast<int>(160 - t * 130);
+                        b = static_cast<int>(30  - t * 10);
+                    }
+                    
+                    return IM_COL32(r, g, b, 255);
+                };
+
+                // helper: draw a tire with wear color fill and force arrows
                 auto draw_tire = [&](const char* label, WheelIndex wheel, float offset_x, float offset_y)
                 {
                     ImVec2 center = ImVec2(section_start.x + offset_x + tire_width * 0.5f, section_start.y + offset_y + tire_height * 0.5f);
@@ -1959,9 +2035,54 @@ namespace spartan
                     ImVec2 br = ImVec2(tl.x + tire_width, tl.y + tire_height);
 
                     bool grounded = physics->IsWheelGrounded(wheel);
-                    draw_list->AddRectFilled(tl, br, grounded ? IM_COL32(60, 60, 60, 255) : IM_COL32(80, 40, 40, 255), 8.0f);
-                    draw_list->AddRect(tl, br, grounded ? IM_COL32(120, 120, 120, 255) : IM_COL32(150, 80, 80, 255), 8.0f, 0, 3.0f);
+                    float wear = physics->GetWheelWear(wheel);
+                    
+                    // tire fill - gradient from wear color (top = tread surface) to dark (sidewall)
+                    ImU32 wear_color = get_wear_color(wear);
+                    int wear_r = (wear_color >> 0) & 0xFF;
+                    int wear_g = (wear_color >> 8) & 0xFF;
+                    int wear_b = (wear_color >> 16) & 0xFF;
 
+                    // draw the tire as vertical gradient strips for a rubber-like look
+                    const int strips = 8;
+                    float strip_h = tire_height / strips;
+                    for (int s = 0; s < strips; s++)
+                    {
+                        // center strips are brighter (contact patch), edges are darker (shoulders)
+                        float dist_from_center = fabsf(s - (strips - 1) * 0.5f) / ((strips - 1) * 0.5f);
+                        float brightness = 1.0f - dist_from_center * 0.4f;
+                        
+                        int sr = static_cast<int>(wear_r * brightness);
+                        int sg = static_cast<int>(wear_g * brightness);
+                        int sb = static_cast<int>(wear_b * brightness);
+                        
+                        if (!grounded)
+                        {
+                            // dim when airborne
+                            sr = sr / 2;
+                            sg = sg / 2;
+                            sb = sb / 2;
+                        }
+                        
+                        ImVec2 strip_tl(tl.x, tl.y + s * strip_h);
+                        ImVec2 strip_br(br.x, tl.y + (s + 1) * strip_h);
+                        float rounding = (s == 0 || s == strips - 1) ? 8.0f : 0.0f;
+                        int round_flags = (s == 0) ? ImDrawFlags_RoundCornersTop : ((s == strips - 1) ? ImDrawFlags_RoundCornersBottom : 0);
+                        draw_list->AddRectFilled(strip_tl, strip_br, IM_COL32(sr, sg, sb, 255), rounding, round_flags);
+                    }
+                    
+                    // border
+                    ImU32 border_color = grounded ? IM_COL32(160, 160, 160, 255) : IM_COL32(100, 60, 60, 255);
+                    draw_list->AddRect(tl, br, border_color, 8.0f, 0, 2.0f);
+                    
+                    // wear percentage overlay in the tire center
+                    char wear_text[8];
+                    snprintf(wear_text, sizeof(wear_text), "%.0f%%", wear * 100.0f);
+                    ImVec2 wear_size = ImGui::CalcTextSize(wear_text);
+                    ImVec2 wear_pos(center.x - wear_size.x * 0.5f, center.y - wear_size.y * 0.5f - 12);
+                    draw_list->AddText(wear_pos, IM_COL32(255, 255, 255, 220), wear_text);
+
+                    // force arrows over the tire
                     float lat_f = physics->GetWheelLateralForce(wheel);
                     float lon_f = physics->GetWheelLongitudinalForce(wheel);
                     float lat_arrow = std::clamp(lat_f * force_scale, -max_arrow, max_arrow);
