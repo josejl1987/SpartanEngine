@@ -25,6 +25,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "Properties.h"
 #include "MenuBar.h"
 #include "World/Entity.h"
+#include "World/Prefab.h"
 #include "World/Components/Light.h"
 #include "World/Components/AudioSource.h"
 #include "World/Components/Physics.h"
@@ -127,6 +128,36 @@ namespace
         {
             camera->AddToSelection(entities_in_tree_order[i]);
         }
+    }
+
+    // instantiate a .prefab file as a new entity in the world
+    spartan::Entity* instantiate_prefab(const std::string& file_path, spartan::Entity* parent = nullptr)
+    {
+        spartan::Entity* entity = spartan::World::CreateEntity();
+        if (!entity)
+            return nullptr;
+
+        // use the prefab file name (without extension) as the entity name
+        std::string name = spartan::FileSystem::GetFileNameWithoutExtensionFromFilePath(file_path);
+        entity->SetObjectName(name);
+
+        // load prefab contents (components and children) into the entity
+        if (!spartan::Prefab::LoadFromFile(file_path, entity))
+        {
+            SP_LOG_ERROR("Failed to instantiate prefab: %s", file_path.c_str());
+            spartan::World::RemoveEntity(entity);
+            return nullptr;
+        }
+
+        // mark the entity as a file prefab so the editor knows about it
+        entity->SetPrefabFilePath(file_path);
+
+        if (parent)
+        {
+            entity->SetParent(parent);
+        }
+
+        return entity;
     }
 
     spartan::RHI_Texture* component_to_image(spartan::Entity* entity)
@@ -260,9 +291,10 @@ void WorldViewer::TreeShow()
     }
     ImGui::EndDisabled();
 
-    // window-level drop target for reordering (gaps between entities) or unparenting (empty space)
+    // window-level drop target for reordering (gaps between entities), unparenting (empty space), or prefab instantiation
     if (ImGui::BeginDragDropTargetCustom(window_rect, ImGui::GetID("##WorldViewerDropTarget")))
     {
+        // handle entity reordering/unparenting
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ENTITY"))
         {
             if (payload->DataSize == sizeof(uint64_t))
@@ -327,6 +359,17 @@ void WorldViewer::TreeShow()
                 }
             }
         }
+
+        // handle prefab drop from asset browser - instantiate as a root entity
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(ImGuiSp::GDragDropTypes[static_cast<int>(ImGuiSp::DragPayloadType::Prefab)].data()))
+        {
+            const auto* prefab_payload = static_cast<const ImGuiSp::DragDropPayload*>(payload->Data);
+            if (const char* file_path = std::get<const char*>(prefab_payload->data))
+            {
+                instantiate_prefab(file_path);
+            }
+        }
+
         ImGui::EndDragDropTarget();
     }
 
@@ -504,10 +547,11 @@ void WorldViewer::TreeAddEntity(spartan::Entity* entity)
         }
     }
 
-    // drop target - only handles parenting (middle zone)
+    // drop target - handles parenting (middle zone) and prefab instantiation
     // reordering is handled by window-level drop target in the gaps
     if (ImGui::BeginDragDropTarget())
     {
+        // entity parenting
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ENTITY"))
         {
             if (payload->DataSize != sizeof(uint64_t))
@@ -551,6 +595,17 @@ void WorldViewer::TreeAddEntity(spartan::Entity* entity)
                 }
             }
         }
+
+        // prefab drop from asset browser - instantiate as a child of the target entity
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(ImGuiSp::GDragDropTypes[static_cast<int>(ImGuiSp::DragPayloadType::Prefab)].data()))
+        {
+            const auto* prefab_payload = static_cast<const ImGuiSp::DragDropPayload*>(payload->Data);
+            if (const char* file_path = std::get<const char*>(prefab_payload->data))
+            {
+                instantiate_prefab(file_path, entity);
+            }
+        }
+
         ImGui::EndDragDropTarget();
     }
     ImGui::PopID();

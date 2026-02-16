@@ -274,11 +274,18 @@ namespace spartan
             if (HasPrefabData())
             {
                 pugi::xml_node prefab_node = node.append_child("prefab");
-                prefab_node.append_attribute("type") = m_prefab_type.c_str();
+
+                if (!m_prefab_type.empty())
+                    prefab_node.append_attribute("type") = m_prefab_type.c_str();
+
+                if (!m_prefab_file_path.empty())
+                    prefab_node.append_attribute("file") = m_prefab_file_path.c_str();
+
                 for (const auto& [key, value] : m_prefab_attributes)
                 {
                     prefab_node.append_attribute(key.c_str()) = value.c_str();
                 }
+
                 return; // don't save components or children - prefab will recreate them
             }
 
@@ -309,6 +316,18 @@ namespace spartan
     {
         m_prefab_type       = type;
         m_prefab_attributes = attributes;
+    }
+
+    void Entity::SetPrefabFilePath(const string& path)
+    {
+        m_prefab_file_path = path;
+    }
+
+    void Entity::ClearPrefabData()
+    {
+        m_prefab_type.clear();
+        m_prefab_file_path.clear();
+        m_prefab_attributes.clear();
     }
 
     void Entity::Load(pugi::xml_node& node)
@@ -349,15 +368,32 @@ namespace spartan
                 {
                     // store prefab data for saving later
                     string prefab_type = component_node.attribute("type").as_string();
+                    string prefab_file = component_node.attribute("file").as_string();
+
                     unordered_map<string, string> prefab_attributes;
                     for (pugi::xml_attribute attr = component_node.first_attribute(); attr; attr = attr.next_attribute())
                     {
-                        prefab_attributes[attr.name()] = attr.value();
+                        string attr_name = attr.name();
+                        if (attr_name == "file")
+                            continue; // file path is stored separately
+                        prefab_attributes[attr_name] = attr.value();
                     }
                     SetPrefabData(prefab_type, prefab_attributes);
 
-                    // create the prefab
-                    Prefab::Create(component_node, this);
+                    if (!prefab_file.empty())
+                        SetPrefabFilePath(prefab_file);
+
+                    // code prefab - use registered factory function
+                    if (!prefab_type.empty() && Prefab::IsRegistered(prefab_type))
+                    {
+                        Prefab::Create(component_node, this);
+                    }
+                    // file prefab - load entity hierarchy from .prefab file
+                    else if (!prefab_file.empty())
+                    {
+                        Prefab::LoadFromFile(prefab_file, this);
+                    }
+
                     continue;
                 }
 

@@ -73,4 +73,5 @@ private:
 
     void ShowAddComponentButton() const;
     void ComponentContextMenu_Add() const;
+    void ShowSaveAsPrefabPopup(spartan::Entity* entity) const;
 };

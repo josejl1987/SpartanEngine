@@ -42,6 +42,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "Rendering/Renderer.h"
 #include "World/Components/Script.h"
 #include "World/Components/ParticleSystem.h"
+#include "World/Prefab.h"
 //=======================================
 
 //= NAMESPACES =========
@@ -712,6 +713,81 @@ void Properties::ShowEntity(Entity* entity) const
         ImGui::TextUnformatted(entity->GetObjectName().c_str());
         ImGui::PopFont();
         ImGui::PopStyleColor();
+
+        // prefab indicator
+        if (entity->HasPrefabData())
+        {
+            ImGui::SameLine();
+
+            // badge styling
+            bool is_code = entity->IsCodePrefab();
+            bool is_file = entity->IsFilePrefab();
+            ImVec4 badge_color = is_code ? ImVec4(0.55f, 0.35f, 0.70f, 1.0f) : ImVec4(0.30f, 0.60f, 0.45f, 1.0f);
+
+            ImGui::PushStyleColor(ImGuiCol_Text, badge_color);
+            ImGui::PushFont(Editor::font_bold);
+            ImGui::TextUnformatted(is_code ? "[prefab:code]" : "[prefab:file]");
+            ImGui::PopFont();
+            ImGui::PopStyleColor();
+
+            layout::group_spacing();
+
+            // prefab type (for code prefabs)
+            if (is_code)
+            {
+                property_text("Prefab Type", entity->GetPrefabType(), "registered code prefab type");
+            }
+
+            // prefab file path (for file prefabs)
+            if (is_file)
+            {
+                property_text("Prefab File", entity->GetPrefabFilePath(), "path to the .prefab file");
+            }
+
+            // code prefab attributes (read-only)
+            if (is_code && !entity->GetPrefabAttributes().empty())
+            {
+                layout::separator();
+                layout::section_header("Prefab Attributes");
+
+                for (const auto& [key, value] : entity->GetPrefabAttributes())
+                {
+                    if (key == "type")
+                        continue; // already shown above
+                    property_text(key.c_str(), value, "prefab attribute (read-only)");
+                }
+            }
+
+            // prefab action buttons
+            layout::separator();
+
+            // save prefab (for file prefabs only)
+            if (is_file)
+            {
+                float button_width = ImGui::GetContentRegionAvail().x;
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.50f, 0.35f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.60f, 0.40f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.20f, 0.45f, 0.30f, 1.0f));
+                if (ImGuiSp::button("Save Prefab", ImVec2(button_width, 0)))
+                {
+                    Prefab::SaveToFile(entity, entity->GetPrefabFilePath());
+                }
+                ImGui::PopStyleColor(3);
+            }
+
+            // detach from prefab
+            {
+                float button_width = ImGui::GetContentRegionAvail().x;
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.35f, 0.30f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.65f, 0.40f, 0.35f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.50f, 0.30f, 0.25f, 1.0f));
+                if (ImGuiSp::button("Detach from Prefab", ImVec2(button_width, 0)))
+                {
+                    entity->ClearPrefabData();
+                }
+                ImGui::PopStyleColor(3);
+            }
+        }
 
         layout::group_spacing();
 
@@ -2349,6 +2425,109 @@ void Properties::ShowAddComponentButton() const
     ImGui::PopStyleVar(2);
 
     ComponentContextMenu_Add();
+
+    // save as prefab button (only for non-prefab entities, or for file prefabs that want to save-as)
+    if (Entity* entity = get_selected_entity())
+    {
+        ImGui::Dummy(ImVec2(0, design::spacing_sm));
+
+        float save_button_width = 160.0f * spartan::Window::GetDpiScale();
+        ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - save_button_width) * 0.5f + ImGui::GetCursorPosX());
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(design::spacing_lg, design::spacing_md));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.30f, 0.50f, 0.35f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.35f, 0.60f, 0.40f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.25f, 0.45f, 0.30f, 1.0f));
+
+        if (ImGuiSp::button("Save as Prefab...", ImVec2(save_button_width, 0)))
+        {
+            ImGui::OpenPopup("##SaveAsPrefab");
+        }
+
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar(2);
+
+        // save-as-prefab popup
+        ShowSaveAsPrefabPopup(entity);
+    }
+}
+
+void Properties::ShowSaveAsPrefabPopup(spartan::Entity* entity) const
+{
+    static char prefab_name[256]  = "";
+    static bool needs_init        = true;
+
+    // detect when the popup is about to open (was closed, now opening)
+    bool is_open = ImGui::IsPopupOpen("##SaveAsPrefab");
+    if (is_open && needs_init)
+    {
+        strncpy_s(prefab_name, sizeof(prefab_name), entity->GetObjectName().c_str(), _TRUNCATE);
+        needs_init = false;
+    }
+    else if (!is_open)
+    {
+        needs_init = true;
+    }
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(design::spacing_xl, design::spacing_lg));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(design::spacing_md, design::spacing_md));
+
+    if (ImGui::BeginPopup("##SaveAsPrefab"))
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.85f, 1.0f));
+        ImGui::PushFont(Editor::font_bold);
+        ImGui::TextUnformatted("Save as Prefab");
+        ImGui::PopFont();
+        ImGui::PopStyleColor();
+
+        ImGui::Dummy(ImVec2(0, design::spacing_sm));
+
+        ImGui::TextUnformatted("Name:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(200.0f);
+        ImGui::InputText("##prefab_name_input", prefab_name, sizeof(prefab_name));
+
+        // show the path that will be used
+        string preview_path = string("prefabs/") + prefab_name + ".prefab";
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+        ImGui::Text("file: %s", preview_path.c_str());
+        ImGui::PopStyleColor();
+
+        ImGui::Dummy(ImVec2(0, design::spacing_sm));
+
+        // save button
+        bool name_valid = strlen(prefab_name) > 0;
+        ImGui::BeginDisabled(!name_valid);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.50f, 0.35f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.60f, 0.40f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.20f, 0.45f, 0.30f, 1.0f));
+
+        if (ImGuiSp::button("Save", ImVec2(80.0f, 0)))
+        {
+            string file_path = string(ResourceCache::GetProjectDirectory()) + "/prefabs/" + prefab_name + ".prefab";
+            if (Prefab::SaveToFile(entity, file_path))
+            {
+                // tag the entity as a file prefab so future world saves reference the file
+                entity->SetPrefabFilePath(file_path);
+            }
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::PopStyleColor(3);
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+
+        if (ImGuiSp::button("Cancel", ImVec2(80.0f, 0)))
+        {
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+
+    ImGui::PopStyleVar(2);
 }
 
 void Properties::ComponentContextMenu_Add() const
