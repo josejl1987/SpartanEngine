@@ -137,7 +137,7 @@ namespace spartan
         static void Screenshot();
         static RHI_CommandList* GetCommandListPresent() { return m_cmd_list_present; }
 
-        // write a draw data entry and return its index (for utility draws like grid, outline, imgui)
+        // write a draw data entry and return its index
         static uint32_t WriteDrawData(const math::Matrix& transform, const math::Matrix& transform_previous = math::Matrix::Identity, uint32_t material_index = 0, uint32_t is_transparent = 0);
 
         // wind
@@ -266,6 +266,7 @@ namespace spartan
         static void UpdateShadowAtlas();
         static void UpdateDrawCalls(RHI_CommandList* cmd_list);
         static void UpdateAccelerationStructures(RHI_CommandList* cmd_list);
+        static void RotateDrawDataBuffer();
 
         // draw calls
         static std::array<Renderer_DrawCall, renderer_max_draw_calls> m_draw_calls;
@@ -281,6 +282,8 @@ namespace spartan
         // bindless draw data (per-draw transforms, material indices, etc.)
         static std::array<Sb_DrawData, renderer_max_draw_calls> m_draw_data_cpu;
         static uint32_t m_draw_data_count;
+        static std::array<std::shared_ptr<RHI_Buffer>, renderer_draw_data_buffer_count> m_draw_data_buffers;
+        static uint32_t m_draw_data_buffer_index;
 
         // bindless
         static std::array<RHI_Texture*, rhi_max_array_size> m_bindless_textures;
@@ -295,7 +298,6 @@ namespace spartan
             bool brdf_lut_produced       = false;
             bool atmosphere_lut_produced = false;
             bool cloud_noise_produced    = false;
-            bool draw_data_descriptor    = false;
 
             // feature-toggle clear flags (set when feature disabled, reset when re-enabled)
             bool cleared_reflections     = false;

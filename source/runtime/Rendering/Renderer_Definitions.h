@@ -27,9 +27,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 namespace spartan
 {
-    const uint32_t renderer_resource_frame_lifetime = 100;
-    const uint32_t renderer_max_draw_calls          = 20000;
-    const uint32_t renderer_max_instance_count      = 1024;
+    const uint32_t renderer_resource_frame_lifetime    = 100;
+    const uint32_t renderer_max_draw_calls            = 20000;
+    const uint32_t renderer_max_instance_count        = 1024;
+    const uint32_t renderer_draw_data_buffer_count    = 4; // matches the command list pool size to avoid cpu-gpu memcpy races
 
     enum class Renderer_Option : uint32_t
     {

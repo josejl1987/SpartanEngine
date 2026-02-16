@@ -66,6 +66,8 @@ namespace spartan
     // bindless draw data
     array<Sb_DrawData, renderer_max_draw_calls> Renderer::m_draw_data_cpu;
     uint32_t Renderer::m_draw_data_count = 0;
+    array<shared_ptr<RHI_Buffer>, renderer_draw_data_buffer_count> Renderer::m_draw_data_buffers;
+    uint32_t Renderer::m_draw_data_buffer_index = 0;
 
     // line and icon rendering
     shared_ptr<RHI_Buffer> Renderer::m_lines_vertex_buffer;
@@ -510,6 +512,11 @@ namespace spartan
                 DestroyAccelerationStructures();
             }
 
+            // rotate the draw data buffer so each frame writes to its own copy.
+            // with 4 command list slots, up to 3 prior frames can be in-flight on the gpu.
+            // rotating through 4 buffers ensures we never memcpy into a buffer the gpu is reading.
+            RotateDrawDataBuffer();
+
             // fill draw call list and determine ideal occluders
             UpdateDrawCalls(m_cmd_list_present);
 
@@ -580,12 +587,8 @@ namespace spartan
                         buffer->Update(m_cmd_list_present, &m_draw_data_cpu[0], buffer->GetStride() * m_draw_data_count);
                     }
 
-                    // the descriptor only needs to be written once since the buffer is persistent
-                    if (!m_pass_state.draw_data_descriptor)
-                    {
-                        RHI_Device::UpdateBindlessDrawData(GetBuffer(Renderer_Buffer::DrawData));
-                        m_pass_state.draw_data_descriptor = true;
-                    }
+                    // the buffer rotates each frame, so the descriptor must follow
+                    RHI_Device::UpdateBindlessDrawData(GetBuffer(Renderer_Buffer::DrawData));
                 }
 
                 // upload indirect draw buffers for gpu-driven rendering
@@ -998,7 +1001,7 @@ namespace spartan
         SP_ASSERT(m_draw_data_count < renderer_max_draw_calls);
         uint32_t index = m_draw_data_count++;
 
-        Sb_DrawData& entry     = m_draw_data_cpu[index];
+        Sb_DrawData& entry       = m_draw_data_cpu[index];
         entry.transform          = transform;
         entry.transform_previous = transform_previous;
         entry.material_index     = material_index;
@@ -1006,8 +1009,7 @@ namespace spartan
         entry.aabb_index         = 0;
         entry.padding            = 0;
 
-        // also write directly to the mapped gpu buffer so that entries written
-        // after the bulk upload (e.g. utility draws during render passes) are visible
+        // write to the mapped gpu buffer directly (HOST_COHERENT makes it visible at submit time)
         RHI_Buffer* buffer = GetBuffer(Renderer_Buffer::DrawData);
         if (void* mapped = buffer->GetMappedData())
         {

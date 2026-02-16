@@ -98,8 +98,20 @@ namespace spartan
         buffer(Renderer_Buffer::IndirectDrawDataOut) = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),         rhi_max_array_size, nullptr,          true, "indirect_draw_data_out");
         buffer(Renderer_Buffer::IndirectDrawCount)   = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(uint32_t)),            1,                  &draw_count_init, true, "indirect_draw_count");
 
-        // bindless draw data buffer - all per-draw transforms, material indices, etc.
-        buffer(Renderer_Buffer::DrawData) = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)), renderer_max_draw_calls, nullptr, true, "draw_data");
+        // bindless draw data buffers - one per command list slot so each frame writes
+        // to its own copy while prior frames' gpu work reads from their respective copies
+        for (uint32_t i = 0; i < renderer_draw_data_buffer_count; i++)
+        {
+            m_draw_data_buffers[i] = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage,
+                static_cast<uint32_t>(sizeof(Sb_DrawData)),
+                renderer_max_draw_calls,
+                nullptr,
+                true,
+                (string("draw_data_") + to_string(i)).c_str()
+            );
+        }
+        buffer(Renderer_Buffer::DrawData) = m_draw_data_buffers[0];
 
         // gpu-driven particle buffers (sized for the upper limit, ~6.4 mb at 100k particles)
         const uint32_t particle_max = 100000;
@@ -976,6 +988,12 @@ namespace spartan
     RHI_Buffer* Renderer::GetBuffer(const Renderer_Buffer type)
     {
         return buffers[static_cast<uint8_t>(type)].get();
+    }
+
+    void Renderer::RotateDrawDataBuffer()
+    {
+        m_draw_data_buffer_index = (m_draw_data_buffer_index + 1) % renderer_draw_data_buffer_count;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::DrawData)] = m_draw_data_buffers[m_draw_data_buffer_index];
     }
 
     RHI_Texture* Renderer::GetStandardTexture(const Renderer_StandardTexture type)
