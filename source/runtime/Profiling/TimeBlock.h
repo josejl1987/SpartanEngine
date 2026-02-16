@@ -45,6 +45,8 @@ namespace spartan
 
         void Begin(const uint32_t id, const char* name, TimeBlockType type, const TimeBlock* parent = nullptr, RHI_CommandList* cmd_list = nullptr, RHI_Queue_Type queue_type = RHI_Queue_Type::Max);
         void End();
+        void ResolveGpuTimestamps(uint64_t global_reference_tick, float timestamp_period);
+        void ResolveGpuDuration();
 
         TimeBlockType GetType()        const { return m_type; }
         const char* GetName()          const { return m_name; }

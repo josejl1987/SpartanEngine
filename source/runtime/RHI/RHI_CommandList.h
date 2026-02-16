@@ -152,6 +152,10 @@ namespace spartan
         float GetTimestampResult(const uint32_t index_timestamp);
         float GetTimestampStartMs(const uint32_t index_timestamp);
 
+        // deferred profiler readback (reads fresh timestamps after gpu execution)
+        void ReadbackTimestampsForProfiler();
+        uint64_t GetTimestampRawTick(uint32_t index) const { return (index < m_max_timestamps) ? m_timestamp_data[index] : 0; }
+
         // occlusion queries
         void BeginOcclusionQuery(const uint64_t entity_id);
         void EndOcclusionQuery();

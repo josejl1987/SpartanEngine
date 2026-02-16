@@ -62,6 +62,7 @@ class Profiler : public Widget
 {
 public:
     Profiler(Editor* editor);
+    void OnTick() override;
     void OnTickVisible() override;
 
 private:

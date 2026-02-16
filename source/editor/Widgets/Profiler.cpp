@@ -139,6 +139,12 @@ Profiler::Profiler(Editor* editor) : Widget(editor)
     m_plot.fill(16.0f);
 }
 
+void Profiler::OnTick()
+{
+    // let the runtime profiler know if the widget is open so it can skip the gpu stall when nobody is watching
+    spartan::Profiler::SetVisualized(m_visible);
+}
+
 void Profiler::OnTickVisible()
 {
     int previous_item_type = mode_hardware;

@@ -54,7 +54,7 @@ namespace spartan
             m_cmd_list = cmd_list;
         }
 
-        // record cpu time for timeline position (both cpu and gpu blocks use this)
+        // record cpu time for timeline position
         m_start    = chrono::high_resolution_clock::now();
         m_start_ms = Profiler::GetCpuOffsetMs(m_start);
 
@@ -84,12 +84,40 @@ namespace spartan
         }
         else if (m_type == TimeBlockType::Gpu)
         {
-            // gpu duration from hardware timestamps (accurate), position from cpu time (consistent across command lists)
-            m_duration = m_cmd_list->GetTimestampResult(m_timestamp_index);
-            m_end_ms   = m_start_ms + m_duration;
+            // gpu duration and position will be resolved later with fresh data in ReadTimeBlocks(),
+            // for now just use cpu time as a placeholder so the block is considered complete
+            m_end_ms = m_start_ms;
         }
 
         m_is_complete = true;
+    }
+
+    void TimeBlock::ResolveGpuTimestamps(uint64_t global_reference_tick, float timestamp_period)
+    {
+        if (m_type != TimeBlockType::Gpu || !m_cmd_list)
+            return;
+
+        // recompute duration from fresh (post-execution) timestamp data
+        m_duration = m_cmd_list->GetTimestampResult(m_timestamp_index);
+
+        // compute position relative to the global frame reference
+        uint64_t start_tick = m_cmd_list->GetTimestampRawTick(m_timestamp_index);
+        if (start_tick >= global_reference_tick && global_reference_tick != 0)
+        {
+            m_start_ms = static_cast<float>((start_tick - global_reference_tick) * timestamp_period * 1e-6f);
+        }
+
+        m_end_ms = m_start_ms + m_duration;
+    }
+
+    void TimeBlock::ResolveGpuDuration()
+    {
+        if (m_type != TimeBlockType::Gpu || !m_cmd_list)
+            return;
+
+        // approximate duration from existing (possibly stale) query pool data, no gpu wait needed
+        m_duration = m_cmd_list->GetTimestampResult(m_timestamp_index);
+        m_end_ms   = m_start_ms + m_duration;
     }
 
     uint32_t TimeBlock::FindTreeDepth(const TimeBlock* time_block, uint32_t depth /*= 0*/)

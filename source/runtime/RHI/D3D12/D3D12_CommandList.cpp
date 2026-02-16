@@ -578,6 +578,11 @@ namespace spartan
         return 0.0f;
     }
 
+    void RHI_CommandList::ReadbackTimestampsForProfiler()
+    {
+        // todo: implement timestamps
+    }
+
     void RHI_CommandList::BeginOcclusionQuery(const uint64_t entity_id)
     {
         // todo: implement occlusion queries

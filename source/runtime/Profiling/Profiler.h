@@ -26,6 +26,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <string>
 #include <vector>
 #include "TimeBlock.h"
+#include <algorithm>
 //====================
 
 #define SP_PROFILE_CPU_START(name) spartan::Profiler::TimeBlockStart(name, spartan::TimeBlockType::Cpu, nullptr);
@@ -56,6 +57,8 @@ namespace spartan
         static void SetUpdateInterval(float interval);
         static bool IsCpuStuttering();
         static bool IsGpuStuttering();
+        static void SetVisualized(bool value);
+        static bool IsVisualized();
 
         // timeline helpers
         static float GetCpuOffsetMs(const std::chrono::high_resolution_clock::time_point& time_point);

@@ -181,7 +181,7 @@ namespace spartan
             RHI_SyncPrimitive* gfx_timeline    = cmd_list_graphics_present->GetTimelineSemaphore();
 
             // =====================================================================
-            // async compute: ssao, screen-space shadows, and cloud shadow
+            // async compute: screen-space effects and ray tracing
             // these overlap with shadow map rasterization on the graphics queue
             // =====================================================================
             {
@@ -195,6 +195,10 @@ namespace spartan
                 Pass_ScreenSpaceAmbientOcclusion(cmd_list_compute);
                 Pass_ScreenSpaceShadows(cmd_list_compute);
 
+                // ray tracing (needs g-buffer and tlas, not shadow atlas, so safe to overlap with shadow maps)
+                Pass_RayTracedShadows(cmd_list_compute);
+                Pass_ReSTIR_PathTracing(cmd_list_compute);
+
                 // submit compute work: waits on graphics g-buffer completion, signals its own timeline
                 cmd_list_compute->Submit(nullptr, false, nullptr, gfx_timeline, gfx_phase1_timeline_value);
             }
@@ -202,8 +206,7 @@ namespace spartan
             RHI_SyncPrimitive* compute_timeline = cmd_list_compute->GetTimelineSemaphore();
 
             // =====================================================================
-            // graphics phase 2: shadow maps and other work that doesn't need compute results
-            // this runs in parallel with the async compute above
+            // graphics phase 2: shadow map rasterization (runs in parallel with async compute above)
             // =====================================================================
             RHI_Queue* queue_graphics = RHI_Device::GetQueue(RHI_Queue_Type::Graphics);
             cmd_list_graphics_present = queue_graphics->NextCommandList();
@@ -211,14 +214,11 @@ namespace spartan
             m_cmd_list_present = cmd_list_graphics_present; // update the static member for submit/present
 
             Pass_ShadowMaps(cmd_list_graphics_present);
-            Pass_RayTracedShadows(cmd_list_graphics_present);
-            Pass_ReSTIR_PathTracing(cmd_list_graphics_present);
 
             // =====================================================================
-            // graphics phase 2 continued: lighting and post-processing
-            // the light pass reads ssao, sss, and cloud_shadow from async compute
+            // graphics phase 3: lighting and post-processing
+            // the light pass reads ssao, sss, cloud_shadow, rt shadows, and restir from async compute
             // we wait on the compute timeline at the next graphics submit boundary
-            // to keep things simple, we submit + wait + begin here before lighting
             // =====================================================================
             cmd_list_graphics_present->Submit(nullptr, false, nullptr, compute_timeline, compute_timeline_value);
 

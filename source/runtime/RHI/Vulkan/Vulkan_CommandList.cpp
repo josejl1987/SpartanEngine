@@ -1875,6 +1875,20 @@ namespace spartan
         return 0.0f;
     }
 
+    void RHI_CommandList::ReadbackTimestampsForProfiler()
+    {
+        // wait for gpu to finish executing this command list
+        if (m_state == RHI_CommandListState::Submitted)
+        {
+            WaitForExecution();
+        }
+
+        // read fresh results from the query pool into m_timestamp_data
+        queries::timestamp::update(m_rhi_query_pool_timestamps);
+        m_timestamp_data          = queries::timestamp::data;
+        m_gpu_frame_reference_tick = m_timestamp_data[0];
+    }
+
     void RHI_CommandList::BeginOcclusionQuery(const uint64_t entity_id)
     {
         SP_ASSERT_MSG(m_pso.IsGraphics(), "Occlusion queries are only supported in graphics pipelines");
