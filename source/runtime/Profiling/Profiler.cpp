@@ -97,6 +97,10 @@ namespace spartan
         // misc
         bool poll = false;
 
+        // frame start reference for timeline
+        chrono::high_resolution_clock::time_point frame_start_cpu;
+        float frame_duration_ms = 0.0f;
+
         // cpu
         const char* cpu_name = "N/A";
         const char* get_cpu_name()
@@ -139,8 +143,27 @@ namespace spartan
         cpu_name = get_cpu_name();
     }
 
+    void Profiler::FrameStart()
+    {
+        frame_start_cpu = chrono::high_resolution_clock::now();
+    }
+
+    float Profiler::GetCpuOffsetMs(const chrono::high_resolution_clock::time_point& time_point)
+    {
+        const chrono::duration<double, milli> ms = time_point - frame_start_cpu;
+        return static_cast<float>(ms.count());
+    }
+
+    float Profiler::GetFrameDurationMs()
+    {
+        return frame_duration_ms;
+    }
+
     void Profiler::PostTick()
     {
+        // measure frame duration for timeline
+        frame_duration_ms = GetCpuOffsetMs(chrono::high_resolution_clock::now());
+
         // compute timings
         {
             is_stuttering_cpu = time_cpu_last > (time_cpu_avg + stutter_delta_ms);
@@ -241,7 +264,7 @@ namespace spartan
         m_time_block_index = -1;
     }
 
-    void Profiler::TimeBlockStart(const char* func_name, TimeBlockType type, RHI_CommandList* cmd_list /*= nullptr*/)
+    void Profiler::TimeBlockStart(const char* func_name, TimeBlockType type, RHI_CommandList* cmd_list /*= nullptr*/, RHI_Queue_Type queue_type /*= RHI_Queue_Type::Max*/)
     {
         if (!poll)
             return;
@@ -258,7 +281,7 @@ namespace spartan
 
         // get new time block
         TimeBlock& new_time_block = m_time_blocks_write[++m_time_block_index];
-        new_time_block.Begin(++m_rhi_timeblock_count, func_name, type, time_block_parent, cmd_list);
+        new_time_block.Begin(++m_rhi_timeblock_count, func_name, type, time_block_parent, cmd_list, queue_type);
     }
 
     void Profiler::TimeBlockEnd()

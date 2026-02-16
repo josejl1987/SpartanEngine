@@ -79,6 +79,7 @@ namespace spartan
     bool Renderer::m_transparents_present          = false;
     bool Renderer::m_bindless_samplers_dirty       = true;
     RHI_CommandList* Renderer::m_cmd_list_present  = nullptr;
+    RHI_CommandList* Renderer::m_cmd_list_compute  = nullptr;
     vector<ShadowSlice> Renderer::m_shadow_slices;
     array<RHI_Texture*, rhi_max_array_size> Renderer::m_bindless_textures;
     array<Sb_Light, rhi_max_array_size> Renderer::m_bindless_lights;
@@ -421,6 +422,8 @@ namespace spartan
 
     void Renderer::Tick()
     {
+        Profiler::FrameStart();
+
         // acquire next swapchain image and update RHI
         {
             swapchain->AcquireNextImage();
@@ -455,11 +458,29 @@ namespace spartan
         bool resolution_valid = m_resolution_render.x >= min_render_dimension && m_resolution_render.y >= min_render_dimension;
         bool can_render = !Window::IsMinimized() && m_initialized_resources && resolution_valid;
 
+        // when the window is minimized or can't render, wait for all previous gpu work
+        // (including present) to complete before starting new commands on the graphics queue.
+        // with a larger command list pool, idle slots can cycle without implicit waits,
+        // so this prevents write-after-present hazards on swapchain images.
+        if (!can_render)
+        {
+            RHI_Device::GetQueue(RHI_Queue_Type::Graphics)->Wait();
+        }
+
         // begin the primary graphics command list
         {
             RHI_Queue* queue_graphics = RHI_Device::GetQueue(RHI_Queue_Type::Graphics);
             m_cmd_list_present = queue_graphics->NextCommandList();
             m_cmd_list_present->Begin();
+        }
+
+        // begin the async compute command list (only when rendering, to avoid orphaned recordings during minimize)
+        m_cmd_list_compute = nullptr;
+        if (can_render)
+        {
+            RHI_Queue* queue_compute = RHI_Device::GetQueue(RHI_Queue_Type::Compute);
+            m_cmd_list_compute = queue_compute->NextCommandList();
+            m_cmd_list_compute->Begin();
         }
 
         // reset draw data count every frame so that late writers like imgui
@@ -603,7 +624,7 @@ namespace spartan
         {
             if (can_render)
             {
-                ProduceFrame(m_cmd_list_present, nullptr);
+                ProduceFrame(m_cmd_list_present, m_cmd_list_compute);
             }
         }
 

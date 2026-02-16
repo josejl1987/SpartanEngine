@@ -194,11 +194,11 @@ namespace ImGui::RHI
 
     void render(ImDrawData* draw_data, WindowData* window_data = nullptr, const bool clear = true)
     {
-        // if the renderer is not initialized, don't do anything
-        // this is because pipeline layouts will be null and that's because
-        // Renderer::Tick() might not have fully run yet due to if (Window::IsMinimized() || !m_initialized_resources)
+        // skip the first two frames to let the renderer fully initialize.
+        // frame 0: pipeline layouts and descriptor sets are still being created.
+        // frame 1: bindless draw_data buffer descriptor may not have been written yet.
         uint64_t frame = Renderer::GetFrameNumber();
-        if (frame < 1)
+        if (frame < 2)
             return;
 
         // get resources

@@ -37,6 +37,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../RHI/RHI_VendorTechnology.h"
 #include "../RHI/RHI_RasterizerState.h"
 #include "../RHI/RHI_Device.h"
+#include "../RHI/RHI_Queue.h"
+#include "../RHI/RHI_SyncPrimitive.h"
 #include "../Core/Window.h"
 SP_WARNINGS_OFF
 #include "bend_sss_cpu.h"
@@ -147,28 +149,85 @@ namespace spartan
             }
         }
 
-        // Only update cloud shadow map when clouds are visible
-        if (clouds_visible)
-        {
-            Pass_CloudShadow(cmd_list_graphics_present);
-        }
-
         if (Camera* camera = World::GetCamera())
         {
+            // vrs stays on graphics since it must complete before depth prepass
             Pass_VariableRateShading(cmd_list_graphics_present);
 
-            // opaques
+            // =====================================================================
+            // graphics phase 1: geometry pipeline up to and including g-buffer
+            // =====================================================================
             {
                 bool is_transparent = false;
                 Pass_HiZ(cmd_list_graphics_present);
                 Pass_IndirectCull(cmd_list_graphics_present);
                 Pass_Depth_Prepass(cmd_list_graphics_present);
                 Pass_GBuffer(cmd_list_graphics_present, is_transparent);
-                Pass_ShadowMaps(cmd_list_graphics_present);
-                Pass_ScreenSpaceShadows(cmd_list_graphics_present);
-                Pass_RayTracedShadows(cmd_list_graphics_present);
-                Pass_ReSTIR_PathTracing(cmd_list_graphics_present);
-                Pass_ScreenSpaceAmbientOcclusion(cmd_list_graphics_present);
+            }
+
+            // transition g-buffer to shader-readable layouts on the graphics queue before submitting.
+            // both the async compute queue (ssao/sss) and the next graphics phase (light) read these,
+            // so the transition must happen here to keep the validation layer's layout tracking consistent.
+            GetRenderTarget(Renderer_RenderTarget::gbuffer_color)->SetLayout(RHI_Image_Layout::Shader_Read, cmd_list_graphics_present);
+            GetRenderTarget(Renderer_RenderTarget::gbuffer_normal)->SetLayout(RHI_Image_Layout::Shader_Read, cmd_list_graphics_present);
+            GetRenderTarget(Renderer_RenderTarget::gbuffer_material)->SetLayout(RHI_Image_Layout::Shader_Read, cmd_list_graphics_present);
+            GetRenderTarget(Renderer_RenderTarget::gbuffer_velocity)->SetLayout(RHI_Image_Layout::Shader_Read, cmd_list_graphics_present);
+            GetRenderTarget(Renderer_RenderTarget::gbuffer_depth)->SetLayout(RHI_Image_Layout::Shader_Read, cmd_list_graphics_present);
+
+            // submit graphics phase 1 and capture the timeline signal value
+            // this signals that the g-buffer is fully written and safe to read from the compute queue
+            cmd_list_graphics_present->Submit(nullptr, false);
+            uint64_t gfx_phase1_timeline_value = cmd_list_graphics_present->GetLastTimelineSignalValue();
+            RHI_SyncPrimitive* gfx_timeline    = cmd_list_graphics_present->GetTimelineSemaphore();
+
+            // =====================================================================
+            // async compute: ssao, screen-space shadows, and cloud shadow
+            // these overlap with shadow map rasterization on the graphics queue
+            // =====================================================================
+            {
+                // cloud shadow (reads pre-generated noise, no g-buffer dependency)
+                if (clouds_visible)
+                {
+                    Pass_CloudShadow(cmd_list_compute);
+                }
+
+                // ssao and screen-space shadows (need g-buffer data)
+                Pass_ScreenSpaceAmbientOcclusion(cmd_list_compute);
+                Pass_ScreenSpaceShadows(cmd_list_compute);
+
+                // submit compute work: waits on graphics g-buffer completion, signals its own timeline
+                cmd_list_compute->Submit(nullptr, false, nullptr, gfx_timeline, gfx_phase1_timeline_value);
+            }
+            uint64_t compute_timeline_value = cmd_list_compute->GetLastTimelineSignalValue();
+            RHI_SyncPrimitive* compute_timeline = cmd_list_compute->GetTimelineSemaphore();
+
+            // =====================================================================
+            // graphics phase 2: shadow maps and other work that doesn't need compute results
+            // this runs in parallel with the async compute above
+            // =====================================================================
+            RHI_Queue* queue_graphics = RHI_Device::GetQueue(RHI_Queue_Type::Graphics);
+            cmd_list_graphics_present = queue_graphics->NextCommandList();
+            cmd_list_graphics_present->Begin();
+            m_cmd_list_present = cmd_list_graphics_present; // update the static member for submit/present
+
+            Pass_ShadowMaps(cmd_list_graphics_present);
+            Pass_RayTracedShadows(cmd_list_graphics_present);
+            Pass_ReSTIR_PathTracing(cmd_list_graphics_present);
+
+            // =====================================================================
+            // graphics phase 2 continued: lighting and post-processing
+            // the light pass reads ssao, sss, and cloud_shadow from async compute
+            // we wait on the compute timeline at the next graphics submit boundary
+            // to keep things simple, we submit + wait + begin here before lighting
+            // =====================================================================
+            cmd_list_graphics_present->Submit(nullptr, false, nullptr, compute_timeline, compute_timeline_value);
+
+            cmd_list_graphics_present = queue_graphics->NextCommandList();
+            cmd_list_graphics_present->Begin();
+            m_cmd_list_present = cmd_list_graphics_present;
+
+            {
+                bool is_transparent = false;
                 Pass_Light(cmd_list_graphics_present, is_transparent);
                 Pass_Light_Composition(cmd_list_graphics_present, is_transparent);
                 cmd_list_graphics_present->Blit(GetRenderTarget(Renderer_RenderTarget::frame_render), GetRenderTarget(Renderer_RenderTarget::frame_render_opaque), false);

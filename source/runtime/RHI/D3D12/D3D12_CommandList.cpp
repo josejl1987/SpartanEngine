@@ -167,7 +167,8 @@ namespace spartan
         m_buffer_id_index  = 0;
     }
 
-    void RHI_CommandList::Submit(RHI_SyncPrimitive* semaphore_wait, const bool is_immediate, RHI_SyncPrimitive* semaphore_signal /*= nullptr*/)
+    void RHI_CommandList::Submit(RHI_SyncPrimitive* semaphore_wait, const bool is_immediate, RHI_SyncPrimitive* semaphore_signal /*= nullptr*/,
+                                RHI_SyncPrimitive* semaphore_timeline_wait /*= nullptr*/, uint64_t timeline_wait_value /*= 0*/)
     {
         SP_ASSERT(m_rhi_resource != nullptr);
         SP_ASSERT(m_state == RHI_CommandListState::Recording);
@@ -568,6 +569,12 @@ namespace spartan
 
     float RHI_CommandList::GetTimestampResult(const uint32_t timestamp_index)
     {
+        return 0.0f;
+    }
+
+    float RHI_CommandList::GetTimestampStartMs(const uint32_t timestamp_index)
+    {
+        // todo: implement timestamps
         return 0.0f;
     }
 

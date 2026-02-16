@@ -444,6 +444,39 @@ namespace spartan
         {
             VkDebugUtilsMessengerEXT messenger;
 
+            // suppress known non-actionable warnings from third-party libraries and validation sdk.
+            // these are either caused by external code (fidelityfx, xess, openxr) requesting
+            // deprecated-but-functional extensions, or by sdk best-practice heuristics that
+            // don't apply to this engine's architecture (e.g. sub-allocation, gpu-av overhead).
+            bool is_suppressed(const VkDebugUtilsMessengerCallbackDataEXT* data)
+            {
+                if (!data || !data->pMessage)
+                    return false;
+
+                const char* msg = data->pMessage;
+
+                // deprecated extensions required by fidelityfx / openxr / xess
+                if (strstr(msg, "Attempting to enable deprecated extension"))  return true;
+                if (strstr(msg, "intended to support D3D emulation layers"))   return true;
+
+                // sub-allocation best-practice: would require a pool allocator for tiny resources
+                if (strstr(msg, "fully consumed by the"))                      return true;
+
+                // spir-v workgroup built-in deprecated in 1.6, requires newer dxc to emit LocalSizeId
+                if (strstr(msg, "Workgroup built-in"))                         return true;
+
+                // gpu-av instrumentation overhead warning (validation layer only, not a runtime issue)
+                if (strstr(msg, "very slow to compile"))                       return true;
+
+                // mutable descriptor type list count mismatch from xess descriptor pool creation
+                if (strstr(msg, "mutableDescriptorTypeListCount"))             return true;
+
+                // forced feature enablement by the validation layer itself
+                if (strstr(msg, "Internal Warning: Forcing"))                  return true;
+
+                return false;
+            }
+
             VKAPI_ATTR VkBool32 VKAPI_CALL log
             (
                 VkDebugUtilsMessageSeverityFlagBitsEXT msg_severity,
@@ -452,6 +485,9 @@ namespace spartan
                 void* p_user_data
             )
             {
+                if (is_suppressed(p_callback_data))
+                    return VK_FALSE;
+
                 if (/*(msg_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT) ||*/ (msg_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT))
                 {
                     SP_LOG_INFO("Vulkan: %s", p_callback_data->pMessage);
@@ -1991,6 +2027,15 @@ namespace spartan
         create_info_image.initialLayout     = vulkan_image_layout[static_cast<uint8_t>(texture->GetLayout(0))];
         create_info_image.samples           = VK_SAMPLE_COUNT_1_BIT;
         create_info_image.sharingMode       = VK_SHARING_MODE_EXCLUSIVE;
+
+        // enable concurrent sharing between graphics and compute queue families for async compute
+        uint32_t concurrent_families[2] = { queues::index_graphics, queues::index_compute };
+        if ((texture->GetFlags() & RHI_Texture_ConcurrentSharing) && queues::index_graphics != queues::index_compute)
+        {
+            create_info_image.sharingMode           = VK_SHARING_MODE_CONCURRENT;
+            create_info_image.queueFamilyIndexCount = 2;
+            create_info_image.pQueueFamilyIndices   = concurrent_families;
+        }
 
         // check physical device format support
         {

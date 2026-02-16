@@ -574,6 +574,10 @@ namespace spartan
             if (m_timestamp_index != 0)
             {
                 queries::timestamp::update(m_rhi_query_pool_timestamps);
+
+                // store per-command-list copy so other queues don't overwrite our results
+                m_timestamp_data = queries::timestamp::data;
+                m_gpu_frame_reference_tick = m_timestamp_data[0];
             }
     
             // queries need to be reset before they are first used and they
@@ -584,26 +588,30 @@ namespace spartan
         }
     }
 
-    void RHI_CommandList::Submit(RHI_SyncPrimitive* semaphore_wait, const bool is_immediate, RHI_SyncPrimitive* semaphore_signal /*= nullptr*/)
+    void RHI_CommandList::Submit(RHI_SyncPrimitive* semaphore_wait, const bool is_immediate, RHI_SyncPrimitive* semaphore_signal /*= nullptr*/,
+                                RHI_SyncPrimitive* semaphore_timeline_wait /*= nullptr*/, uint64_t timeline_wait_value /*= 0*/)
     {
         SP_ASSERT(m_state == RHI_CommandListState::Recording);
 
-        // end
+        // end recording: flush any pending layout transitions, then close the command buffer
         RenderPassEnd();
+        FlushBarriers();
         SP_ASSERT_VK(vkEndCommandBuffer(static_cast<VkCommandBuffer>(m_rhi_resource)));
 
-        // determine which binary semaphore to signal:
-        // - if external semaphore provided (e.g. per-swapchain-image), use that
-        // - if immediate mode, no binary semaphore (timeline only)
-        // - otherwise use the command list's binary semaphore
-        RHI_SyncPrimitive* semaphore_binary = semaphore_signal ? semaphore_signal : (is_immediate ? nullptr : m_rendering_complete_semaphore.get());
+        // only signal a binary semaphore when explicitly provided (e.g. swapchain present).
+        // the cmd list's own binary semaphore is not auto-signaled because with multi-submit
+        // per frame (async compute overlap), intermediate submits would signal it repeatedly
+        // without a corresponding wait, violating the vulkan spec for binary semaphores.
+        RHI_SyncPrimitive* semaphore_binary = semaphore_signal;
 
         m_queue->Submit(
-            static_cast<VkCommandBuffer>(m_rhi_resource), // cmd buffer
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,            // wait flags
-            semaphore_wait,                               // wait semaphore
-            semaphore_binary,                             // signal semaphore
-            m_rendering_complete_semaphore_timeline.get() // signal semaphore
+            static_cast<VkCommandBuffer>(m_rhi_resource),
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            semaphore_wait,                               // wait semaphore (binary)
+            semaphore_binary,                             // signal semaphore (binary)
+            m_rendering_complete_semaphore_timeline.get(), // signal semaphore (timeline)
+            semaphore_timeline_wait,                      // wait semaphore (timeline, for cross-queue sync)
+            timeline_wait_value                           // value to wait on
         );
 
         if (semaphore_wait)
@@ -1835,14 +1843,36 @@ namespace spartan
 
     float RHI_CommandList::GetTimestampResult(const uint32_t index_timestamp)
     {
-        SP_ASSERT_MSG(index_timestamp + 1 < queries::timestamp::data.size(), "index out of range");
+        SP_ASSERT_MSG(index_timestamp + 1 < m_timestamp_data.size(), "index out of range");
 
-        uint64_t start    = queries::timestamp::data[index_timestamp];
-        uint64_t end      = queries::timestamp::data[index_timestamp + 1];
-        uint64_t duration = clamp<uint64_t>(end - start, 0, numeric_limits<uint64_t>::max());
+        uint64_t start = m_timestamp_data[index_timestamp];
+        uint64_t end   = m_timestamp_data[index_timestamp + 1];
+
+        // guard against unsigned underflow (stale or not-yet-ready query data)
+        if (end <= start)
+            return 0.0f;
+
+        uint64_t duration = end - start;
         float duration_ms = static_cast<float>(duration * RHI_Device::PropertyGetTimestampPeriod() * 1e-6f);
 
-        return clamp(duration_ms, 0.0f, numeric_limits<float>::max());
+        return clamp(duration_ms, 0.0f, 1000.0f);
+    }
+
+    float RHI_CommandList::GetTimestampStartMs(const uint32_t index_timestamp)
+    {
+        SP_ASSERT_MSG(index_timestamp < m_timestamp_data.size(), "index out of range");
+
+        uint64_t start_tick = m_timestamp_data[index_timestamp];
+        uint64_t ref_tick   = m_gpu_frame_reference_tick;
+
+        // offset from frame reference in ms
+        if (start_tick >= ref_tick)
+        {
+            float offset_ms = static_cast<float>((start_tick - ref_tick) * RHI_Device::PropertyGetTimestampPeriod() * 1e-6f);
+            return clamp(offset_ms, 0.0f, numeric_limits<float>::max());
+        }
+
+        return 0.0f;
     }
 
     void RHI_CommandList::BeginOcclusionQuery(const uint64_t entity_id)
@@ -1905,11 +1935,12 @@ namespace spartan
     {
         SP_ASSERT(name != nullptr);
     
-        // timing
-        Profiler::TimeBlockStart(name, TimeBlockType::Cpu, this);
+        // timing - pass the queue type so the profiler knows which lane this block belongs to
+        RHI_Queue_Type queue_type = m_queue ? m_queue->GetType() : RHI_Queue_Type::Max;
+        Profiler::TimeBlockStart(name, TimeBlockType::Cpu, this, queue_type);
         if (Debugging::IsGpuTimingEnabled() && gpu_timing)
         {
-            Profiler::TimeBlockStart(name, TimeBlockType::Gpu, this);
+            Profiler::TimeBlockStart(name, TimeBlockType::Gpu, this, queue_type);
         }
     
         // markers (support nesting)
@@ -2387,6 +2418,36 @@ namespace spartan
                     buffer_barriers.push_back(vk_barrier);
                     break;
                 }
+            }
+        }
+
+        // compute queues only support a subset of pipeline stages; filter out graphics-only stages
+        if (m_queue->GetType() == RHI_Queue_Type::Compute)
+        {
+            auto sanitize = [](VkPipelineStageFlags2 stages) -> VkPipelineStageFlags2
+            {
+                const VkPipelineStageFlags2 compute_valid =
+                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT        |
+                    VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT     |
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT     |
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT           |
+                    VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT       |
+                    VK_PIPELINE_STAGE_2_HOST_BIT               |
+                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
+                VkPipelineStageFlags2 filtered = stages & compute_valid;
+                return filtered ? filtered : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            };
+
+            for (auto& b : image_barriers)
+            {
+                b.srcStageMask = sanitize(b.srcStageMask);
+                b.dstStageMask = sanitize(b.dstStageMask);
+            }
+            for (auto& b : buffer_barriers)
+            {
+                b.srcStageMask = sanitize(b.srcStageMask);
+                b.dstStageMask = sanitize(b.dstStageMask);
             }
         }
 

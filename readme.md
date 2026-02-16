@@ -80,6 +80,7 @@ The renderer is built around a single principle: **the GPU owns the data**. Ever
 - **Tightly packed 10-byte instance format** for hundreds of millions of instances (procedural grass, foliage)
 - **On-the-fly GPU mip generation** (FidelityFX SPD) **and texture compression** (FidelityFX Compressonator), assets are processed on the GPU at load time, not baked offline
 - **Unified deferred rendering with transparency**, opaque and transparent surfaces share the same BSDF and render path, no separate forward pass
+- **Async compute**, SSAO, screen-space shadows, and cloud shadows run on the compute queue in parallel with shadow map rasterization, synchronized via timeline semaphores
 
 ### Lighting and Global Illumination
 
@@ -138,7 +139,7 @@ A full vehicle dynamics simulation running at **200Hz** for precise tire and sus
 | **Input** | Keyboard, mouse, controllers, and steering wheels with haptic feedback |
 | **Entity system** | Component-based architecture with transform hierarchies, prefabs, and XML serialization |
 | **Threading** | Custom thread pool with hardware-aware scaling, parallel loops, nested parallelism detection, and progress tracking |
-| **Profiling** | CPU and GPU profiling with scoped time blocks, draw call and binding stats, stutter detection, and RenderDoc integration |
+| **Profiling** | Nsight/RGP-style timeline profiler with separate graphics and async compute lanes, CPU and GPU scoped time blocks, zoom and pan, draw call and binding stats, stutter detection, and RenderDoc integration |
 | **Asset import** | 40+ model formats (via Assimp), 30+ image formats (via FreeImage), 10+ font formats (via FreeType), mesh optimization (via meshoptimizer) |
 | **Editor** | ImGui-based editor with world hierarchy, asset browser, property inspector, script and shader editors, texture viewer, viewport with transform gizmos, profiler, and console |
 

@@ -22,6 +22,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //= INCLUDES ======================
 #include "pch.h"
 #include "TimeBlock.h"
+#include "Profiler.h"
 #include "../RHI/RHI_CommandList.h"
 //=================================
 
@@ -38,13 +39,14 @@ namespace spartan
 
     }
 
-    void TimeBlock::Begin(const uint32_t id, const char* name, TimeBlockType type, const TimeBlock* parent /*= nullptr*/, RHI_CommandList* cmd_list /*= nullptr*/)
+    void TimeBlock::Begin(const uint32_t id, const char* name, TimeBlockType type, const TimeBlock* parent /*= nullptr*/, RHI_CommandList* cmd_list /*= nullptr*/, RHI_Queue_Type queue_type /*= RHI_Queue_Type::Max*/)
     {
         m_id             = id;
         m_name           = name;
         m_parent         = parent;
         m_tree_depth     = FindTreeDepth(this);
         m_type           = type;
+        m_queue_type     = queue_type;
         m_max_tree_depth = max(m_max_tree_depth, m_tree_depth);
 
         if (cmd_list)
@@ -52,11 +54,11 @@ namespace spartan
             m_cmd_list = cmd_list;
         }
 
-        if (type == TimeBlockType::Cpu)
-        {
-            m_start = chrono::high_resolution_clock::now();
-        }
-        else if (type == TimeBlockType::Gpu)
+        // record cpu time for timeline position (both cpu and gpu blocks use this)
+        m_start    = chrono::high_resolution_clock::now();
+        m_start_ms = Profiler::GetCpuOffsetMs(m_start);
+
+        if (type == TimeBlockType::Gpu)
         {
             m_timestamp_index = cmd_list->BeginTimestamp();
         }
@@ -64,7 +66,6 @@ namespace spartan
 
     void TimeBlock::End()
     {
-        // end
         if (m_type == TimeBlockType::Cpu)
         {
             m_end = chrono::high_resolution_clock::now();
@@ -74,17 +75,18 @@ namespace spartan
             m_cmd_list->EndTimestamp();
         }
 
-        // compute duration
+        // compute duration and timeline offsets
+        if (m_type == TimeBlockType::Cpu)
         {
-            if (m_type == TimeBlockType::Cpu)
-            {
-                const chrono::duration<double, milli> ms = m_end - m_start;
-                m_duration = static_cast<float>(ms.count());
-            }
-            else if (m_type == TimeBlockType::Gpu)
-            {
-                m_duration = m_cmd_list->GetTimestampResult(m_timestamp_index);
-            }
+            const chrono::duration<double, milli> ms = m_end - m_start;
+            m_duration = static_cast<float>(ms.count());
+            m_end_ms   = m_start_ms + m_duration;
+        }
+        else if (m_type == TimeBlockType::Gpu)
+        {
+            // gpu duration from hardware timestamps (accurate), position from cpu time (consistent across command lists)
+            m_duration = m_cmd_list->GetTimestampResult(m_timestamp_index);
+            m_end_ms   = m_start_ms + m_duration;
         }
 
         m_is_complete = true;

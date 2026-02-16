@@ -331,6 +331,7 @@ namespace spartan
         static std::mutex m_mutex_renderables;
         static bool m_transparents_present;
         static RHI_CommandList* m_cmd_list_present;
+        static RHI_CommandList* m_cmd_list_compute;
         static std::vector<ShadowSlice> m_shadow_slices;
         static uint32_t m_count_active_lights;
     };

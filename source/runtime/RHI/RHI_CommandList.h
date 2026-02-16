@@ -27,6 +27,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "RHI_Definitions.h"
 #include "RHI_PipelineState.h"
 #include "RHI_Buffer.h"
+#include "RHI_SyncPrimitive.h"
 #include "../Rendering/Renderer_Definitions.h"
 #include "../Core/SpartanObject.h"
 #include <stack>
@@ -69,7 +70,8 @@ namespace spartan
         ~RHI_CommandList();
 
         void Begin();
-        void Submit(RHI_SyncPrimitive* semaphore_wait, const bool is_immediate, RHI_SyncPrimitive* semaphore_signal = nullptr);
+        void Submit(RHI_SyncPrimitive* semaphore_wait, const bool is_immediate, RHI_SyncPrimitive* semaphore_signal = nullptr,
+                    RHI_SyncPrimitive* semaphore_timeline_wait = nullptr, uint64_t timeline_wait_value = 0);
         void WaitForExecution(const bool log_wait_time = false);
         void SetPipelineState(RHI_PipelineState& pso);
 
@@ -148,6 +150,7 @@ namespace spartan
         uint32_t BeginTimestamp();
         void EndTimestamp();
         float GetTimestampResult(const uint32_t index_timestamp);
+        float GetTimestampStartMs(const uint32_t index_timestamp);
 
         // occlusion queries
         void BeginOcclusionQuery(const uint64_t entity_id);
@@ -178,9 +181,11 @@ namespace spartan
 
         // misc
         void RenderPassEnd();
-        RHI_SyncPrimitive* GetRenderingCompleteSemaphore() { return m_rendering_complete_semaphore.get(); }
-        const RHI_CommandListState GetState() const        { return m_state; }
-        RHI_Queue* GetQueue() const                        { return m_queue; }
+        RHI_SyncPrimitive* GetRenderingCompleteSemaphore()         { return m_rendering_complete_semaphore.get(); }
+        RHI_SyncPrimitive* GetTimelineSemaphore()                  { return m_rendering_complete_semaphore_timeline.get(); }
+        uint64_t GetLastTimelineSignalValue() const                { return m_rendering_complete_semaphore_timeline ? m_rendering_complete_semaphore_timeline->GetValue() : 0; }
+        const RHI_CommandListState GetState() const                { return m_state; }
+        RHI_Queue* GetQueue() const                                { return m_queue; }
         void CopyTextureToBuffer(RHI_Texture* source, RHI_Buffer* destination);
 
         // rhi
@@ -200,6 +205,11 @@ namespace spartan
         uint64_t m_buffer_id_instance                        = 0;
         uint64_t m_buffer_id_index                           = 0;
         uint32_t m_timestamp_index                           = 0;
+
+        // per-command-list timestamp storage (avoids cross-queue data corruption)
+        static constexpr uint32_t m_max_timestamps           = 256;
+        std::array<uint64_t, m_max_timestamps> m_timestamp_data = {};
+        uint64_t m_gpu_frame_reference_tick                  = 0;
         RHI_Pipeline* m_pipeline                             = nullptr;
         RHI_DescriptorSetLayout* m_descriptor_layout_current = nullptr;
         std::atomic<RHI_CommandListState> m_state            = RHI_CommandListState::Idle;
