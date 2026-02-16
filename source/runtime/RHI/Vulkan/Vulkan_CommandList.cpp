@@ -1951,19 +1951,17 @@ namespace spartan
         SP_ASSERT(size);
         SP_ASSERT(data);
         SP_ASSERT(offset + size <= buffer->GetObjectSize());
+        SP_ASSERT(offset % 4 == 0);
+        SP_ASSERT(size % 4 == 0);
 
-        // check for vkCmdUpdateBuffer compliance
-        bool synchronized_update  = true;
-        synchronized_update      &= (offset % 4 == 0);                    // offset must be a multiple of 4
-        synchronized_update      &= (size % 4 == 0);                      // size must be a multiple of 4
-        synchronized_update      &= (size <= rhi_max_buffer_update_size); // size must not exceed 65536 bytes
+        // end any active render pass before updating the buffer
+        RenderPassEnd();
 
-        if (synchronized_update)
+        VkCommandBuffer vk_cmd_buffer = static_cast<VkCommandBuffer>(m_rhi_resource);
+        VkBuffer vk_buffer            = static_cast<VkBuffer>(buffer->GetRhiResource());
+
+        // pre-barrier: ensure prior reads from the previous frame complete before we write
         {
-            // end any active render pass before updating the buffer
-            RenderPassEnd();
-        
-            // first barrier: ensure prior reads complete before the write
             VkBufferMemoryBarrier2 barrier_before = {};
             barrier_before.sType                  = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
             barrier_before.srcStageMask           = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -1972,29 +1970,39 @@ namespace spartan
             barrier_before.dstAccessMask          = VK_ACCESS_2_TRANSFER_WRITE_BIT;
             barrier_before.srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
             barrier_before.dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
-            barrier_before.buffer                 = static_cast<VkBuffer>(buffer->GetRhiResource());
+            barrier_before.buffer                 = vk_buffer;
             barrier_before.offset                 = offset;
             barrier_before.size                   = size;
-        
-            VkDependencyInfo dependency_info_before = {};
-            dependency_info_before.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dependency_info_before.bufferMemoryBarrierCount = 1;
-            dependency_info_before.pBufferMemoryBarriers    = &barrier_before;
-        
-            vkCmdPipelineBarrier2(static_cast<VkCommandBuffer>(m_rhi_resource), &dependency_info_before);
+
+            VkDependencyInfo dependency_info = {};
+            dependency_info.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dependency_info.bufferMemoryBarrierCount = 1;
+            dependency_info.pBufferMemoryBarriers    = &barrier_before;
+
+            vkCmdPipelineBarrier2(vk_cmd_buffer, &dependency_info);
             Profiler::m_rhi_pipeline_barriers++;
-        
-            // update the buffer
-            vkCmdUpdateBuffer
-            (
-                static_cast<VkCommandBuffer>(m_rhi_resource),
-                static_cast<VkBuffer>(buffer->GetRhiResource()),
-                offset,
-                size,
-                data
-            );
-        
-            // second barrier: ensure the write completes before all subsequent stages
+        }
+
+        // update: vkCmdUpdateBuffer is limited to 65536 bytes per call, so chunk large updates
+        {
+            const uint8_t* src        = static_cast<const uint8_t*>(data);
+            uint64_t bytes_remaining  = size;
+            uint64_t current_offset   = offset;
+
+            while (bytes_remaining > 0)
+            {
+                uint64_t chunk_size = (bytes_remaining > rhi_max_buffer_update_size) ? rhi_max_buffer_update_size : bytes_remaining;
+
+                vkCmdUpdateBuffer(vk_cmd_buffer, vk_buffer, current_offset, chunk_size, src);
+
+                src             += chunk_size;
+                current_offset  += chunk_size;
+                bytes_remaining -= chunk_size;
+            }
+        }
+
+        // post-barrier: ensure the write completes before subsequent reads
+        {
             VkBufferMemoryBarrier2 barrier_after = {};
             barrier_after.sType                  = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
             barrier_after.srcStageMask           = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
@@ -2003,11 +2011,10 @@ namespace spartan
             barrier_after.dstAccessMask          = 0;
             barrier_after.srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
             barrier_after.dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
-            barrier_after.buffer                 = static_cast<VkBuffer>(buffer->GetRhiResource());
+            barrier_after.buffer                 = vk_buffer;
             barrier_after.offset                 = offset;
             barrier_after.size                   = size;
-        
-            // adjust dstAccessMask for subsequent accesses based on buffer type
+
             switch (buffer->GetType())
             {
                 case RHI_Buffer_Type::Vertex:
@@ -2030,19 +2037,14 @@ namespace spartan
                     SP_ASSERT_MSG(false, "Unknown buffer type");
                     break;
             }
-        
-            VkDependencyInfo dependency_info_after          = {};
-            dependency_info_after.sType                     = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dependency_info_after.bufferMemoryBarrierCount  = 1;
-            dependency_info_after.pBufferMemoryBarriers     = &barrier_after;
-        
-            vkCmdPipelineBarrier2(static_cast<VkCommandBuffer>(m_rhi_resource), &dependency_info_after);
+
+            VkDependencyInfo dependency_info = {};
+            dependency_info.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dependency_info.bufferMemoryBarrierCount = 1;
+            dependency_info.pBufferMemoryBarriers    = &barrier_after;
+
+            vkCmdPipelineBarrier2(vk_cmd_buffer, &dependency_info);
             Profiler::m_rhi_pipeline_barriers++;
-        }
-        else // big bindless arrays (updating these is up to the renderer)
-        {
-            void* mapped_data = static_cast<char*>(buffer->GetMappedData()) + offset;
-            memcpy(mapped_data, data, size);
         }
     }
 

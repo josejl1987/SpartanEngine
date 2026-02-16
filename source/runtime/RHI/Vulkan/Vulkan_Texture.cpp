@@ -261,7 +261,7 @@ namespace spartan
             }
         
             if (staging_buffer)
-                RHI_Device::DeletionQueueAdd(RHI_Resource_Type::Buffer, staging_buffer);
+                RHI_Device::MemoryBufferDestroy(staging_buffer);
         }
 
         RHI_Image_Layout GetAppropriateLayout(RHI_Texture* texture)

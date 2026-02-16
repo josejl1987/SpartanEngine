@@ -163,11 +163,6 @@ namespace spartan
             RHI_Device::SetResourceName(m_rhi_resource_layout, RHI_Resource_Type::PipelineLayout, pipeline_state.name);
         }
 
-        if (m_state.name == "light_integration_brdf_specular_lut")
-        {
-            bool test = true;
-        }
-
         if (pipeline_state.IsCompute())
         {
             VkComputePipelineCreateInfo pipeline_info = {};

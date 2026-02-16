@@ -277,52 +277,35 @@ namespace spartan
             "VK_KHR_ray_tracing_maintenance1"
         };
 
-        bool is_present_device(const char* extension_name, VkPhysicalDevice device_physical)
-        {
-            uint32_t extension_count = 0;
-            vkEnumerateDeviceExtensionProperties(device_physical, nullptr, &extension_count, nullptr);
-
-            vector<VkExtensionProperties> extensions(extension_count);
-            vkEnumerateDeviceExtensionProperties(device_physical, nullptr, &extension_count, extensions.data());
-
-            for (const auto& extension : extensions)
-            {
-                if (strcmp(extension_name, extension.extensionName) == 0)
-                    return true;
-            }
-
-            return false;
-        }
-
-        bool is_present_instance(const char* extension_name)
-        {
-            uint32_t extension_count = 0;
-            vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, nullptr);
-
-            vector<VkExtensionProperties> extensions(extension_count);
-            vkEnumerateInstanceExtensionProperties(nullptr, &extension_count, extensions.data());
-
-            for (const auto& extension : extensions)
-            {
-                if (strcmp(extension_name, extension.extensionName) == 0)
-                    return true;
-            }
-
-            return false;
-        }
-
         vector<const char*> get_extensions_device()
         {
+            // enumerate all available device extensions once
+            uint32_t available_count = 0;
+            vkEnumerateDeviceExtensionProperties(RHI_Context::device_physical, nullptr, &available_count, nullptr);
+            vector<VkExtensionProperties> available(available_count);
+            vkEnumerateDeviceExtensionProperties(RHI_Context::device_physical, nullptr, &available_count, available.data());
+
+            // check each requested extension against the enumerated list
             vector<const char*> extensions_supported;
-            for (const auto& extension : extensions_device)
+            for (const auto& requested : extensions_device)
             {
-                if (is_present_device(extension, RHI_Context::device_physical))
+                bool found = false;
+                for (const auto& ext : available)
                 {
-                    extensions_supported.emplace_back(extension);
+                    if (strcmp(requested, ext.extensionName) == 0)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (found)
+                {
+                    extensions_supported.emplace_back(requested);
                 }
                 else
                 {
-                    SP_LOG_WARNING("Device extension \"%s\" is not supported", extension);
+                    SP_LOG_WARNING("Device extension \"%s\" is not supported", requested);
                 }
             }
 
@@ -343,16 +326,33 @@ namespace spartan
                 extensions_instance.emplace_back("VK_EXT_debug_utils");
             }
 
+            // enumerate all available instance extensions once
+            uint32_t available_count = 0;
+            vkEnumerateInstanceExtensionProperties(nullptr, &available_count, nullptr);
+            vector<VkExtensionProperties> available(available_count);
+            vkEnumerateInstanceExtensionProperties(nullptr, &available_count, available.data());
+
+            // check each requested extension against the enumerated list
             vector<const char*> extensions_supported;
-            for (const auto& extension : extensions_instance)
+            for (const auto& requested : extensions_instance)
             {
-                if (is_present_instance(extension))
+                bool found = false;
+                for (const auto& ext : available)
                 {
-                    extensions_supported.emplace_back(extension);
+                    if (strcmp(requested, ext.extensionName) == 0)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (found)
+                {
+                    extensions_supported.emplace_back(requested);
                 }
                 else
                 {
-                    SP_LOG_ERROR("Instance extension \"%s\" is not supported", extension);
+                    SP_LOG_ERROR("Instance extension \"%s\" is not supported", requested);
                 }
             }
 
@@ -452,19 +452,17 @@ namespace spartan
                 void* p_user_data
             )
             {
-                string msg = "Vulkan: " + string(p_callback_data->pMessage);
-
                 if (/*(msg_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT) ||*/ (msg_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT))
                 {
-                    SP_LOG_INFO(msg.c_str());
+                    SP_LOG_INFO("Vulkan: %s", p_callback_data->pMessage);
                 }
                 else if (msg_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
                 {
-                    SP_LOG_WARNING(msg.c_str());
+                    SP_LOG_WARNING("Vulkan: %s", p_callback_data->pMessage);
                 }
                 else if (msg_severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
                 {
-                    SP_LOG_ERROR(msg.c_str());
+                    SP_LOG_ERROR("Vulkan: %s", p_callback_data->pMessage);
                 }
 
                 return VK_FALSE;
@@ -509,51 +507,6 @@ namespace spartan
         void destroy()
         {
             regular.fill(nullptr);
-        }
-
-        uint32_t get_queue_family_index(const vector<VkQueueFamilyProperties>& queue_families, VkQueueFlags queue_flags)
-        {
-            // compute only queue family index
-            if ((queue_flags & VK_QUEUE_COMPUTE_BIT) == queue_flags)
-            {
-                for (uint32_t i = 0; i < static_cast<uint32_t>(queue_families.size()); i++)
-                {
-                    if (i == index_graphics)
-                        continue;
-
-                    if ((queue_families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && ((queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0))
-                    {
-                        return i;
-                    }
-                }
-            }
-
-            // transfer only queue family index
-            if ((queue_flags & VK_QUEUE_TRANSFER_BIT) == queue_flags)
-            {
-                for (uint32_t i = 0; i < static_cast<uint32_t>(queue_families.size()); i++)
-                {
-                    if (i == index_graphics || i == index_compute)
-                        continue;
-
-                    if ((queue_families[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && ((queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) && ((queue_families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) == 0))
-                    {
-                        return i;
-                    }
-                }
-            }
-
-            // first available graphics queue family index
-            for (uint32_t i = 0; i < static_cast<uint32_t>(queue_families.size()); i++)
-            {
-                if ((queue_families[i].queueFlags & queue_flags) == queue_flags)
-                {
-                    return i;
-                }
-            }
-
-            SP_ASSERT_MSG(false, "Could not find a matching queue family index");
-            return numeric_limits<uint32_t>::max();
         }
 
         bool detect_queue_family_indices(VkPhysicalDevice physical_device)
@@ -634,91 +587,6 @@ namespace spartan
             return true;
         }
 
-        bool get_queue_family_index(VkQueueFlagBits queue_flags, const vector<VkQueueFamilyProperties>& queue_family_properties, uint32_t* index)
-        {
-            // try to find a queue that only supports compute (dedicated)
-            if (queue_flags & VK_QUEUE_COMPUTE_BIT)
-            {
-                for (uint32_t i = 0; i < static_cast<uint32_t>(queue_family_properties.size()); i++)
-                {
-                    if ((queue_family_properties[i].queueFlags & queue_flags) && ((queue_family_properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0))
-                    {
-                        *index = i;
-                        return true;
-                    }
-                }
-            }
-
-            // try to find a queue that only supports copy (dedicated)
-            if (queue_flags & VK_QUEUE_TRANSFER_BIT)
-            {
-                for (uint32_t i = 0; i < static_cast<uint32_t>(queue_family_properties.size()); i++)
-                {
-                    if ((queue_family_properties[i].queueFlags & queue_flags) && ((queue_family_properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) && ((queue_family_properties[i].queueFlags & VK_QUEUE_COMPUTE_BIT) == 0))
-                    {
-                        *index = i;
-                        return true;
-                    }
-                }
-            }
-
-            // for graphics, just find any queue that supports graphics
-            for (uint32_t i = 0; i < static_cast<uint32_t>(queue_family_properties.size()); i++)
-            {
-                if (queue_family_properties[i].queueFlags & queue_flags)
-                {
-                    *index = i;
-                    return true;
-                }
-            }
-
-            return false;
-        };
-
-        bool get_queue_family_indices(const VkPhysicalDevice& physical_device)
-        {
-            uint32_t queue_family_count = 0;
-            vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, nullptr);
-        
-            vector<VkQueueFamilyProperties> queue_families_properties(queue_family_count);
-            vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &queue_family_count, queue_families_properties.data());
-        
-            // graphics
-            uint32_t index = 0;
-            if (get_queue_family_index(VK_QUEUE_GRAPHICS_BIT, queue_families_properties, &index))
-            {
-                queues::index_graphics = index;
-            }
-            else
-            {
-                SP_LOG_ERROR("Graphics queue not supported.");
-                return false;
-            }
-        
-            // compute
-            if (get_queue_family_index(VK_QUEUE_COMPUTE_BIT, queue_families_properties, &index))
-            {
-                queues::index_compute = index;
-            }
-            else
-            {
-                SP_LOG_ERROR("Compute queue not supported.");
-                return false;
-            }
-        
-            // copy
-            if (get_queue_family_index(VK_QUEUE_TRANSFER_BIT, queue_families_properties, &index))
-            {
-                queues::index_copy = index;
-            }
-            else
-            {
-                SP_LOG_ERROR("Copy queue not supported.");
-                return false;
-            }
-        
-            return true;
-        };
     }
 
     namespace vulkan_memory_allocator
@@ -924,17 +792,11 @@ namespace spartan
                     }
                 }
         
-                // simple bubble sort
-                for (size_t i = 0; i < static_size; ++i)
+                // sort by slot
+                sort(static_buffer, static_buffer + static_size, [](const RHI_Descriptor& a, const RHI_Descriptor& b)
                 {
-                    for (size_t j = i + 1; j < static_size; ++j)
-                    {
-                        if (static_buffer[j].slot < static_buffer[i].slot)
-                        {
-                            swap(static_buffer[i], static_buffer[j]);
-                        }
-                    }
-                }
+                    return a.slot < b.slot;
+                });
         
                 // cache as vector (first-time allocation unavoidable)
                 descriptor_cache[pipeline_state_hash] = vector<RHI_Descriptor>(static_buffer, static_buffer + static_size);
@@ -1086,7 +948,9 @@ namespace spartan
                 const uint32_t index      = static_cast<uint32_t>(RHI_Device_Bindless_Resource::MaterialTextures);
                 const ResourceConfig& cfg = configs[index];
 
-                vector<VkDescriptorImageInfo> image_infos(cfg.count);
+                static thread_local vector<VkDescriptorImageInfo> image_infos;
+                image_infos.resize(cfg.count);
+
                 void* fallback = Renderer::GetStandardTexture(Renderer_StandardTexture::Checkerboard)->GetRhiSrv();
 
                 for (uint32_t i = 0; i < cfg.count; ++i)
@@ -1111,10 +975,12 @@ namespace spartan
 
             void update_samplers(RHI_Device_Bindless_Resource type, const shared_ptr<RHI_Sampler>* samplers, uint32_t count)
             {
-                const uint32_t index      = static_cast<uint32_t>(type);
-                const ResourceConfig& cfg = configs[index];
+                const uint32_t index = static_cast<uint32_t>(type);
 
-                vector<VkDescriptorImageInfo> image_infos(count);
+                // max sampler count is small enough for the stack
+                constexpr uint32_t max_samplers = 16;
+                SP_ASSERT(count <= max_samplers);
+                VkDescriptorImageInfo image_infos[max_samplers] = {};
                 for (uint32_t i = 0; i < count; ++i)
                 {
                     image_infos[i].sampler = static_cast<VkSampler>(samplers[i]->GetRhiResource());
@@ -1127,7 +993,7 @@ namespace spartan
                 write.dstArrayElement = 0;
                 write.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER;
                 write.descriptorCount = count;
-                write.pImageInfo      = image_infos.data();
+                write.pImageInfo      = image_infos;
 
                 vkUpdateDescriptorSets(RHI_Context::device, 1, &write, 0, nullptr);
             }
@@ -1518,7 +1384,7 @@ namespace spartan
                 VkPhysicalDevice device = static_cast<VkPhysicalDevice>(RHI_Device::PhysicalDeviceGet()[device_index].GetData());
 
                 // get the first device which supports graphics, compute and transfer queues
-                if (queues::get_queue_family_indices(device))
+                if (queues::detect_queue_family_indices(device))
                 {
                     RHI_Device::PhysicalDeviceSetPrimary(device_index);
                     RHI_Context::device_physical = device;
@@ -1769,9 +1635,12 @@ namespace spartan
 
     void RHI_Device::QueueWaitAll(const bool flush)
     {
-        for (uint32_t i = 0; i < 2; i++)
+        for (uint32_t i = 0; i < static_cast<uint32_t>(RHI_Queue_Type::Max); i++)
         {
-            queues::regular[i]->Wait(flush);
+            if (queues::regular[i])
+            {
+                queues::regular[i]->Wait(flush);
+            }
         }
     }
 
@@ -2224,16 +2093,31 @@ namespace spartan
         }
     }
 
+    namespace
+    {
+        // cached at init time since physical device memory properties never change
+        VkPhysicalDeviceMemoryProperties cached_memory_properties = {};
+        bool memory_properties_cached = false;
+
+        const VkPhysicalDeviceMemoryProperties& get_memory_properties()
+        {
+            if (!memory_properties_cached)
+            {
+                vkGetPhysicalDeviceMemoryProperties(static_cast<VkPhysicalDevice>(RHI_Context::device_physical), &cached_memory_properties);
+                memory_properties_cached = true;
+            }
+            return cached_memory_properties;
+        }
+    }
+
     uint64_t RHI_Device::MemoryGetAllocatedMb()
     {
         uint64_t bytes = 0;
-    
-        VkPhysicalDeviceMemoryProperties memory_properties;
-        vkGetPhysicalDeviceMemoryProperties(static_cast<VkPhysicalDevice>(RHI_Context::device_physical), &memory_properties);
-    
+        const VkPhysicalDeviceMemoryProperties& memory_properties = get_memory_properties();
+
         VmaBudget budgets[VK_MAX_MEMORY_HEAPS];
         vmaGetHeapBudgets(vulkan_memory_allocator::allocator, budgets);
-    
+
         for (uint32_t i = 0; i < VK_MAX_MEMORY_HEAPS; i++)
         {
             if (memory_properties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
@@ -2242,20 +2126,18 @@ namespace spartan
                     bytes += budgets[i].usage;
             }
         }
-    
+
         return bytes / (1024ull * 1024ull);
     }
-    
+
     uint64_t RHI_Device::MemoryGetAvailableMb()
     {
         uint64_t bytes = 0;
-    
-        VkPhysicalDeviceMemoryProperties memory_properties;
-        vkGetPhysicalDeviceMemoryProperties(static_cast<VkPhysicalDevice>(RHI_Context::device_physical), &memory_properties);
-    
+        const VkPhysicalDeviceMemoryProperties& memory_properties = get_memory_properties();
+
         VmaBudget budgets[VK_MAX_MEMORY_HEAPS];
         vmaGetHeapBudgets(vulkan_memory_allocator::allocator, budgets);
-    
+
         for (uint32_t i = 0; i < VK_MAX_MEMORY_HEAPS; i++)
         {
             if (memory_properties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
@@ -2264,26 +2146,23 @@ namespace spartan
                     bytes += budgets[i].budget;
             }
         }
-    
+
         return bytes / (1024ull * 1024ull);
     }
 
     uint64_t RHI_Device::MemoryGetTotalMb()
     {
         uint64_t bytes = 0;
-    
-        VkPhysicalDeviceMemoryProperties memory_properties;
-        vkGetPhysicalDeviceMemoryProperties(static_cast<VkPhysicalDevice>(RHI_Context::device_physical), &memory_properties);
-    
+        const VkPhysicalDeviceMemoryProperties& memory_properties = get_memory_properties();
+
         for (uint32_t i = 0; i < memory_properties.memoryHeapCount; i++)
         {
-            // Only consider device-local heaps (VRAM on dGPUs)
             if (memory_properties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
             {
                 bytes += memory_properties.memoryHeaps[i].size;
             }
         }
-    
+
         return bytes / (1024ull * 1024ull);
     }
 
