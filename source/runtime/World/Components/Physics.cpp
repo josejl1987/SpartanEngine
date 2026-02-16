@@ -1515,7 +1515,7 @@ namespace spartan
         {
             // calculate correct body height using actual spring stiffness
             float front_mass_per_wheel = car::cfg.mass * 0.40f * 0.5f;
-            float front_omega = 2.0f * math::pi * car::tuning::front_spring_freq;
+            float front_omega = 2.0f * math::pi * car::tuning::spec.front_spring_freq;
             float front_stiffness = front_mass_per_wheel * front_omega * front_omega;
             float front_load = front_mass_per_wheel * 9.81f;
             float expected_sag = std::clamp(front_load / front_stiffness, 0.0f, car::cfg.suspension_travel * 0.8f);

@@ -1602,7 +1602,7 @@ namespace spartan
                     if (ImGui::Selectable(car::preset_registry[i].name, is_selected))
                     {
                         car::active_preset_index = i;
-                        car::load_car(car::preset_registry[i].factory());
+                        car::load_car(*car::preset_registry[i].instance);
                     }
                     if (is_selected)
                         ImGui::SetItemDefaultFocus();
