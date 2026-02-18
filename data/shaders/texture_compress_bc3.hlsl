@@ -21,6 +21,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 // gpu bc3 texture compression using amd compressonator kernels
 // each 64-thread group compresses 4 bc blocks (4x4 pixels each)
+// input is a flat buffer of packed rgba8 pixels (all mips concatenated)
 
 #ifndef ASPM_HLSL
 #define ASPM_HLSL
@@ -30,16 +31,30 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "common_resources.hlsl"
 
 // compression parameters packed into the push constant values:
-// values[0].x = num_block_x     (as uint via asuint)
-// values[0].y = num_total_blocks (as uint via asuint)
-// values[0].z = quality          (float)
-// values[0].w = mip_level        (as uint via asuint)
-// values[1].x = buffer_offset    (as uint via asuint)
-uint  get_num_block_x()      { return asuint(pass_get_f3_value().x); }
-uint  get_num_total_blocks() { return asuint(pass_get_f3_value().y); }
-float get_quality()          { return pass_get_f3_value().z; }
-uint  get_mip_level()        { return asuint(buffer_pass.values[0].w); }
-uint  get_buffer_offset()    { return asuint(buffer_pass.values[1].x); }
+// values[0].x = num_block_x      (uint via asuint)
+// values[0].y = num_total_blocks  (uint via asuint)
+// values[0].z = quality           (float)
+// values[0].w = input_mip_offset  (uint via asuint) - pixel offset into input buffer
+// values[1].x = output_offset     (uint via asuint) - block offset into output buffer
+// values[1].y = mip_width         (uint via asuint) - width of this mip in pixels
+// values[1].z = mip_height        (uint via asuint) - height of this mip in pixels
+uint  get_num_block_x()      { return asuint(buffer_pass.values[0].x); }
+uint  get_num_total_blocks() { return asuint(buffer_pass.values[0].y); }
+float get_quality()          { return buffer_pass.values[0].z; }
+uint  get_input_mip_offset() { return asuint(buffer_pass.values[0].w); }
+uint  get_output_offset()    { return asuint(buffer_pass.values[1].x); }
+uint  get_mip_width()        { return asuint(buffer_pass.values[1].y); }
+uint  get_mip_height()       { return asuint(buffer_pass.values[1].z); }
+
+float4 unpack_rgba8(uint packed)
+{
+    return float4(
+        float((packed      ) & 0xFFu) / 255.0,
+        float((packed >>  8) & 0xFFu) / 255.0,
+        float((packed >> 16) & 0xFFu) / 255.0,
+        float((packed >> 24) & 0xFFu) / 255.0
+    );
+}
 
 #define MAX_USED_THREAD   16
 #define BLOCK_IN_GROUP    4
@@ -54,7 +69,9 @@ void main_cs(uint GI : SV_GroupIndex, uint3 groupID : SV_GroupID)
 {
     uint num_block_x      = get_num_block_x();
     uint num_total_blocks = get_num_total_blocks();
-    uint mip_level        = get_mip_level();
+    uint input_mip_offset = get_input_mip_offset();
+    uint mip_width        = get_mip_width();
+    uint mip_height       = get_mip_height();
 
     uint blockInGroup = GI / MAX_USED_THREAD;
     uint blockID      = groupID.x * BLOCK_IN_GROUP + blockInGroup;
@@ -69,10 +86,12 @@ void main_cs(uint GI : SV_GroupIndex, uint3 groupID : SV_GroupID)
     uint base_x  = block_x * BLOCK_SIZE_X;
     uint base_y  = block_y * BLOCK_SIZE_Y;
 
-    // load 4x4 pixel block from the source texture at the specified mip level
+    // load 4x4 pixel block from the flat input buffer, clamping to mip edges
     if (pixelInBlock < 16)
     {
-        shared_temp[GI] = float4(tex.Load(uint3(base_x + pixelInBlock % 4, base_y + pixelInBlock / 4, mip_level)));
+        uint px = min(base_x + pixelInBlock % 4, mip_width - 1);
+        uint py = min(base_y + pixelInBlock / 4, mip_height - 1);
+        shared_temp[GI] = unpack_rgba8(tex_compress_in[input_mip_offset + py * mip_width + px]);
     }
 
     GroupMemoryBarrierWithGroupSync();
@@ -90,6 +109,6 @@ void main_cs(uint GI : SV_GroupIndex, uint3 groupID : SV_GroupID)
             blockA[i]     = shared_temp[pixelBase + i].w;
         }
 
-        tex_compress_out[get_buffer_offset() + blockID] = CompressBlockBC3_UNORM(blockRGB, blockA, get_quality(), false);
+        tex_compress_out[get_output_offset() + blockID] = CompressBlockBC3_UNORM(blockRGB, blockA, get_quality(), false);
     }
 }
