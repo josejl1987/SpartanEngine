@@ -319,7 +319,7 @@ namespace car
             lat_B  = 12.0f;
             lat_C  = 1.4f;
             lat_D  = 1.0f;
-            lat_E  = 0.6f;
+            lat_E  = -0.5f;
             long_B = 20.0f;
             long_C = 1.5f;
             long_D = 1.0f;
@@ -534,7 +534,7 @@ namespace car
             lat_B  = 12.0f;
             lat_C  = 1.4f;
             lat_D  = 1.0f;
-            lat_E  = 0.6f;
+            lat_E  = -0.5f;
             long_B = 20.0f;
             long_C = 1.5f;
             long_D = 1.0f;
@@ -748,7 +748,7 @@ namespace car
             lat_B  = 10.5f;
             lat_C  = 1.3f;
             lat_D  = 1.0f;
-            lat_E  = 0.4f;
+            lat_E  = -0.6f;
             long_B = 16.0f;
             long_C = 1.4f;
             long_D = 1.0f;
@@ -2169,35 +2169,23 @@ namespace car
                 float pacejka_slip_angle = PxClamp(effective_slip_angle, -tuning::spec.max_slip_angle, tuning::spec.max_slip_angle);
                 
                 // load-dependent B coefficient scaling
+                // real tires follow ~Fz^-0.4 from the BCD cornering stiffness saturation curve
                 float load_norm = w.tire_load / tuning::spec.load_reference;
-                float B_load_scale = 1.0f / PxMax(load_norm, tuning::spec.load_B_scale_min);
+                float B_load_scale = powf(1.0f / PxMax(load_norm, tuning::spec.load_B_scale_min), 0.4f);
                 float lat_B_eff  = tuning::spec.lat_B * B_load_scale;
                 float long_B_eff = tuning::spec.long_B * B_load_scale;
                 
-                // combined slip via equivalent slip projection
-                float sin_a = sinf(pacejka_slip_angle);
-                float cos_a = cosf(pacejka_slip_angle);
-                float sigma = sqrtf(w.slip_ratio * w.slip_ratio + sin_a * sin_a);
+                // evaluate each curve at its own pure-slip input, then enforce friction ellipse
+                float lat_mu  = pacejka(pacejka_slip_angle, lat_B_eff, tuning::spec.lat_C, tuning::spec.lat_D, tuning::spec.lat_E);
+                float long_mu = pacejka(w.slip_ratio, long_B_eff, tuning::spec.long_C, tuning::spec.long_D, tuning::spec.long_E);
                 
-                float lat_mu, long_mu;
-                if (sigma > 0.001f)
+                // friction ellipse: scale both axes so the resultant stays within the grip circle
+                float total_mu = sqrtf(lat_mu * lat_mu + long_mu * long_mu);
+                if (total_mu > 1.0f)
                 {
-                    // combined regime - both slip axes active
-                    float sigma_lat  = sin_a / sigma;
-                    float sigma_long = w.slip_ratio / sigma;
-                    
-                    // evaluate pacejka with the total slip magnitude, then project back
-                    float mu_lat_raw  = pacejka(sigma, lat_B_eff, tuning::spec.lat_C, tuning::spec.lat_D, tuning::spec.lat_E);
-                    float mu_long_raw = pacejka(sigma, long_B_eff, tuning::spec.long_C, tuning::spec.long_D, tuning::spec.long_E);
-                    
-                    lat_mu  = mu_lat_raw * sigma_lat;
-                    long_mu = mu_long_raw * sigma_long;
-                }
-                else
-                {
-                    // pure slip regime - standard independent evaluation
-                    lat_mu  = pacejka(pacejka_slip_angle, lat_B_eff, tuning::spec.lat_C, tuning::spec.lat_D, tuning::spec.lat_E);
-                    long_mu = pacejka(w.slip_ratio, long_B_eff, tuning::spec.long_C, tuning::spec.long_D, tuning::spec.long_E);
+                    float inv_total = 1.0f / total_mu;
+                    lat_mu  *= inv_total;
+                    long_mu *= inv_total;
                 }
                 
                 // lateral grip floor
@@ -2218,6 +2206,15 @@ namespace car
                 bool is_left_wheel = (i == front_left || i == rear_left);
                 float camber_thrust = camber * w.tire_load * tuning::spec.camber_thrust_coeff;
                 lat_f += is_left_wheel ? -camber_thrust : camber_thrust;
+
+                // friction circle cap on the final force vector
+                float total_f = sqrtf(lat_f * lat_f + long_f * long_f);
+                if (total_f > peak_force)
+                {
+                    float inv = peak_force / total_f;
+                    lat_f  *= inv;
+                    long_f *= inv;
+                }
 
                 if (tuning::log_pacejka)
                     SP_LOG_INFO("[%s] pacejka: lat_mu=%.3f, long_mu=%.3f, lat_f=%.1f, long_f=%.1f", wheel_name, lat_mu, long_mu, lat_f, long_f);
