@@ -319,6 +319,9 @@ RWStructuredBuffer<Particle>      particle_buffer_a : register(u36);
 RWStructuredBuffer<uint>          particle_counter  : register(u38);
 RWStructuredBuffer<EmitterParams> particle_emitter  : register(u39);
 
+// gpu texture compression output
+RWStructuredBuffer<uint4> tex_compress_out : register(u40);
+
 // buffers
 [[vk::push_constant]]
 PassBufferData buffer_pass;

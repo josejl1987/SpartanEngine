@@ -177,6 +177,8 @@ namespace spartan
         particle_buffer_b      = 37,
         particle_counter       = 38,
         particle_emitter       = 39,
+        // gpu texture compression
+        compress_output        = 40,
     };
 
     enum class Renderer_Shader : uint8_t
@@ -261,6 +263,8 @@ namespace spartan
         particle_emit_c,
         particle_simulate_c,
         particle_render_c,
+        // gpu texture compression
+        texture_compress_bc3_c,
         max
     };
     

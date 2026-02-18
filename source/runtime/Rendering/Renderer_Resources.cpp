@@ -755,6 +755,10 @@ namespace spartan
             shader(Renderer_Shader::particle_render_c)->Compile(RHI_Shader_Type::Compute, shader_dir + "particles.hlsl", async);
         }
 
+        // gpu texture compression - compiled synchronously since it's needed during texture loading
+        shader(Renderer_Shader::texture_compress_bc3_c) = make_shared<RHI_Shader>();
+        shader(Renderer_Shader::texture_compress_bc3_c)->Compile(RHI_Shader_Type::Compute, shader_dir + "texture_compress_bc3.hlsl", false);
+
     }
 
     void Renderer::CreateFonts()
