@@ -936,6 +936,7 @@ namespace spartan
         standard_textures.fill(nullptr);
         standard_meshes.fill(nullptr);
         buffers.fill(nullptr);
+        m_draw_data_buffers.fill(nullptr);
         standard_font     = nullptr;
         standard_material = nullptr;
     }

@@ -441,6 +441,9 @@ namespace spartan
         }
         
         // update optional render targets when their cvars change
+        // skip until resources are initialized to avoid blocking the first frame with QueueWaitAll
+        // while the background thread is still uploading textures via immediate execution
+        if (m_initialized_resources)
         {
             static uint32_t options_hash = 0;
             uint32_t options_hash_new    = (cvar_ssao.GetValueAs<bool>() << 0) | (cvar_ray_traced_reflections.GetValueAs<bool>() << 1) | (cvar_restir_pt.GetValueAs<bool>() << 2);
@@ -464,7 +467,9 @@ namespace spartan
         // (including present) to complete before starting new commands on the graphics queue.
         // with a larger command list pool, idle slots can cycle without implicit waits,
         // so this prevents write-after-present hazards on swapchain images.
-        if (!can_render)
+        // skip on the first frame since no prior rendering has occurred and waiting here
+        // would just block on the background thread's immediate execution texture uploads
+        if (!can_render && frame_num > 0)
         {
             RHI_Device::GetQueue(RHI_Queue_Type::Graphics)->Wait();
         }
@@ -668,6 +673,9 @@ namespace spartan
         }
     
         // increment frame counter and trigger first-frame event
+        // only count frames that actually rendered so the splash screen
+        // stays visible until the editor has real content to show
+        if (can_render)
         {
             frame_num++;
             if (frame_num == 1)
