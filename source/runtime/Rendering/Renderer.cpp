@@ -370,7 +370,7 @@ namespace spartan
             // as the occluder set and draw call list stabilize. frustum culling stays active.
             {
                 static uint32_t post_load_frames = 0;
-                static bool was_loading           = false;
+                static bool was_loading           = true;
 
                 if (is_loading)
                 {

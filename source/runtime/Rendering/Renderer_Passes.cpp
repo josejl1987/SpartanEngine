@@ -430,20 +430,23 @@ namespace spartan
 
     void Renderer::Pass_HiZ(RHI_CommandList* cmd_list)
     {
-        // renders major occluders to a depth buffer and builds a hi-z mip chain
-        // the indirect cull compute shader samples this for gpu-driven occlusion culling
-        // when disabled, the indirect cull still runs but the hi-z texture stays zeroed (far plane)
-        // so the occlusion test trivially passes everything and only frustum culling is active
-
-        if (!cvar_hiz_occlusion.GetValueAs<bool>() || m_is_hiz_suppressed)
-            return;
+        // renders major occluders to a depth buffer and builds a hi-z mip chain.
+        // the indirect cull compute shader samples this for gpu-driven occlusion culling.
+        // the depth texture is ALWAYS cleared to 0.0 (far plane, reverse-z) and the mip
+        // chain is always rebuilt, even when occlusion is disabled or suppressed. this
+        // guarantees the cull shader never reads stale/uninitialized depth, which would
+        // cause non-deterministic culling artifacts depending on gpu memory contents.
 
         cmd_list->BeginTimeblock("hiz");
 
         RHI_Texture* tex_occluders     = GetRenderTarget(Renderer_RenderTarget::gbuffer_depth_occluders);
         RHI_Texture* tex_occluders_hiz = GetRenderTarget(Renderer_RenderTarget::gbuffer_depth_occluders_hiz);
 
-        // render the occluders
+        bool render_occluders = cvar_hiz_occlusion.GetValueAs<bool>() && !m_is_hiz_suppressed;
+
+        // always start the render pass so the depth texture is cleared to far plane (0.0).
+        // without this, the blit and downscale would propagate stale depth into the hi-z
+        // mip chain, causing the cull shader to incorrectly occlude objects.
         {
             RHI_PipelineState pso;
             pso.name                             = "occluders";
@@ -455,37 +458,34 @@ namespace spartan
             pso.resolution_scale                 = true;
             pso.clear_depth                      = 0.0f;
 
-            bool pipeline_set = false;
+            cmd_list->SetPipelineState(pso);
 
-            for (uint32_t i = 0; i < m_draw_calls_prepass_count; i++)
+            if (render_occluders)
             {
-                const Renderer_DrawCall& draw_call = m_draw_calls_prepass[i];
-
-                if (!draw_call.is_occluder)
-                    continue;
-
-                if (!pipeline_set)
+                for (uint32_t i = 0; i < m_draw_calls_prepass_count; i++)
                 {
-                    cmd_list->SetPipelineState(pso);
-                    pipeline_set = true;
+                    const Renderer_DrawCall& draw_call = m_draw_calls_prepass[i];
+
+                    if (!draw_call.is_occluder)
+                        continue;
+
+                    Renderable* renderable = draw_call.renderable;
+                    RHI_CullMode cull_mode = static_cast<RHI_CullMode>(renderable->GetMaterial()->GetProperty(MaterialProperty::CullMode));
+                    cull_mode              = (pso.rasterizer_state->GetPolygonMode() == RHI_PolygonMode::Wireframe) ? RHI_CullMode::None : cull_mode;
+                    cmd_list->SetCullMode(cull_mode);
+
+                    m_pcb_pass_cpu.draw_index = draw_call.draw_data_index;
+                    cmd_list->PushConstants(m_pcb_pass_cpu);
+
+                    cmd_list->SetBufferVertex(renderable->GetVertexBuffer());
+                    cmd_list->SetBufferIndex(renderable->GetIndexBuffer());
+
+                    cmd_list->DrawIndexed(
+                        renderable->GetIndexCount(draw_call.lod_index),
+                        renderable->GetIndexOffset(draw_call.lod_index),
+                        renderable->GetVertexOffset(draw_call.lod_index)
+                    );
                 }
-
-                Renderable* renderable = draw_call.renderable;
-                RHI_CullMode cull_mode = static_cast<RHI_CullMode>(renderable->GetMaterial()->GetProperty(MaterialProperty::CullMode));
-                cull_mode              = (pso.rasterizer_state->GetPolygonMode() == RHI_PolygonMode::Wireframe) ? RHI_CullMode::None : cull_mode;
-                cmd_list->SetCullMode(cull_mode);
-
-                m_pcb_pass_cpu.draw_index = draw_call.draw_data_index;
-                cmd_list->PushConstants(m_pcb_pass_cpu);
-
-                cmd_list->SetBufferVertex(renderable->GetVertexBuffer());
-                cmd_list->SetBufferIndex(renderable->GetIndexBuffer());
-
-                cmd_list->DrawIndexed(
-                    renderable->GetIndexCount(draw_call.lod_index),
-                    renderable->GetIndexOffset(draw_call.lod_index),
-                    renderable->GetVertexOffset(draw_call.lod_index)
-                );
             }
         }
 
