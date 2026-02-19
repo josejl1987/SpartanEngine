@@ -111,8 +111,7 @@ namespace spartan
         static void Shutdown();
         static void Tick();
 
-        // primitive rendering (development & debugging)
-        // duration_sec: 0.0f = single frame, > 0.0 = seconds to display, FLT_MAX = infinite
+        // debug primitives (duration: 0 = one frame, > 0 = seconds, FLT_MAX = forever)
         static void DrawLine(const math::Vector3& from, const math::Vector3& to, const Color& color_from = Color::standard_renderer_lines, const Color& color_to = Color::standard_renderer_lines, float duration_sec = 0.0f);
         static void DrawTriangle(const math::Vector3& v0, const math::Vector3& v1, const math::Vector3& v2, const Color& color = Color::standard_renderer_lines, float duration_sec = 0.0f);
         static void DrawBox(const math::BoundingBox& box, const Color& color = Color::standard_renderer_lines, float duration_sec = 0.0f);
@@ -251,8 +250,7 @@ namespace spartan
         static void UpdateLights(RHI_CommandList* cmd_lis);
         static void UpdateBoundingBoxes(RHI_CommandList* cmd_list);
 
-        // returns true if a draw must go through the cpu-driven path (tessellated, instanced, alpha-tested, double-sided)
-        // the gpu-driven indirect path only handles opaque, back-face-culled, non-instanced, non-tessellated draws
+        // true if this draw can't go through the gpu-driven indirect path
         static bool IsCpuDrivenDraw(const Renderer_DrawCall& draw_call, Material* material);
 
         // misc
@@ -276,8 +274,7 @@ namespace spartan
         static std::array<Sb_DrawData, rhi_max_array_size> m_indirect_draw_data;
         static uint32_t m_indirect_draw_count;
 
-        // per-frame gpu buffers - rotated each frame so in-flight frames never race.
-        // grouping them in a struct makes it impossible to forget one during create/rotate/destroy.
+        // per-frame gpu buffers, rotated so in-flight frames never race
         struct FrameResource
         {
             std::shared_ptr<RHI_Buffer> draw_data;
@@ -291,7 +288,7 @@ namespace spartan
         static std::array<FrameResource, renderer_draw_data_buffer_count> m_frame_resources;
         static uint32_t m_frame_resource_index;
 
-        // bindless draw data (per-draw transforms, material indices, etc.)
+        // cpu-side draw data staging
         static std::array<Sb_DrawData, renderer_max_draw_calls> m_draw_data_cpu;
         static uint32_t m_draw_data_count;
 
@@ -301,7 +298,7 @@ namespace spartan
         static std::array<Sb_Aabb, rhi_max_array_size> m_bindless_aabbs;
         static bool m_bindless_samplers_dirty;
 
-        // one-shot and feature-toggle state, consolidated for easy reset on reinitialize
+        // one-shot and feature-toggle state
         struct PassState
         {
             // one-shot initialization (run once, never again unless reset)

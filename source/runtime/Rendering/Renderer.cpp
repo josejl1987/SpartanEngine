@@ -154,17 +154,15 @@ namespace spartan
             Breadcrumbs::Initialize();
         }
 
-        // options - cvars are initialized with defaults, but some need runtime values
+        // runtime cvar overrides
         {
-            // set gamma from display
+            // gamma from display
             ConsoleRegistry::Get().SetValueFromString("r.gamma", to_string(Display::GetGamma()));
             
-            // set tonemapping to gran turismo 7 (works for both hdr and sdr)
+            // default tonemapping
             ConsoleRegistry::Get().SetValueFromString("r.tonemapping", to_string(static_cast<float>(Renderer_Tonemapping::GranTurismo7)));
 
-            // volumetric clouds defaults are set in the cvar declarations
-
-            // set wind direction and strength
+            // default wind
             {
                 float rotation_y      = 120.0f * math::deg_to_rad;
                 const float intensity = 3.0f; // meters per second
@@ -172,38 +170,26 @@ namespace spartan
             }
         }
 
-        // resolution
+        // resolution (settings or editor may override later)
         {
-            // note #1: settings can override default resolutions based on loaded XML configurations
-            // note #2: if settings are absent, the editor will set the render/viewport resolutions to it's viewport size
-
             uint32_t width  = Window::GetWidth();
             uint32_t height = Window::GetHeight();
 
-            // the resolution of the output frame (we can upscale to that linearly or with fsr)
             SetResolutionOutput(width, height, false);
-
-            // set the render resolution to something smaller than the output resolution
-            // this is done because FSR is not good at doing TAA if the render resolution is the same as the output resolution
-            SetResolutionRender(1920, 1080, false);
-
-            // the resolution/size of the editor's viewport, this is overridden by the editor based on the actual viewport size
+            SetResolutionRender(1920, 1080, false); // lower than output so fsr/taa works well
             SetViewport(static_cast<float>(width), static_cast<float>(height));
         }
 
-        // in case of breadcrumb support, anything that uses a command list can use RHI_FidelityFX
-        // so we need to initialize even before the swapchain which can use a copy queue etc.
+        // must init before swapchain since breadcrumbs need it for command lists
         RHI_VendorTechnology::Initialize();
 
-        // swap chain
+        // swapchain
         {
             swapchain = make_shared<RHI_SwapChain>
             (
                 Window::GetHandleSDL(),
                 Window::GetWidth(),
                 Window::GetHeight(),
-                // present mode: for v-sync, we could mailbox for lower latency, but fifo is always supported, so we'll assume that
-                // note: fifo is not supported on linux, it will be ignored
                 cvar_vsync.GetValueAs<bool>() ? RHI_Present_Mode::Fifo : RHI_Present_Mode::Immediate,
                 swap_chain_buffer_count,
                 Display::GetHdr(),
@@ -213,9 +199,8 @@ namespace spartan
             ConsoleRegistry::Get().SetValueFromString("r.hdr", swapchain->IsHdr() ? "1" : "0");
         }
 
-        // load/create resources
+        // resources (heavy ops on background thread)
         {
-            // reduce startup time by doing expensive operations in another thread
             ThreadPool::AddTask([]()
             {
                 m_initialized_resources = false;
@@ -235,12 +220,9 @@ namespace spartan
             CreateSamplers();
         }
 
-        // handle edge cases
+        if (RHI_Device::GetPrimaryPhysicalDevice()->IsBelowMinimumRequirements())
         {
-            if (RHI_Device::GetPrimaryPhysicalDevice()->IsBelowMinimumRequirements())
-            {
-                SP_WARNING_WINDOW("The GPU does not meet the minimum requirements for running the engine. The engine might be missing features and it won't perform as expected.");
-            }
+            SP_WARNING_WINDOW("The GPU does not meet the minimum requirements for running the engine. The engine might be missing features and it won't perform as expected.");
         }
 
         // events
@@ -254,15 +236,12 @@ namespace spartan
     {
         SP_FIRE_EVENT(EventType::RendererOnShutdown);
 
-        // wait for all commands list, from all queues, to finish executing
         RHI_Device::QueueWaitAll();
 
         RHI_CommandList::ImmediateExecutionShutdown();
 
-        // shutdown nrd denoiser
         RHI_VendorTechnology::NRD_Shutdown();
 
-        // manually destroy everything so that RHI_Device::ParseDeletionQueue() frees memory
         {
             DestroyResources();
             GeometryBuffer::Shutdown();
@@ -287,7 +266,6 @@ namespace spartan
     {
         Profiler::FrameStart();
 
-        // acquire next swapchain image and update RHI
         {
             swapchain->AcquireNextImage();
             RHI_Device::Tick(frame_num);
@@ -301,9 +279,7 @@ namespace spartan
             }
         }
         
-        // update optional render targets when their cvars change
-        // skip until resources are initialized to avoid blocking the first frame with QueueWaitAll
-        // while the background thread is still uploading textures via immediate execution
+        // recreate optional render targets when feature cvars change
         if (m_initialized_resources)
         {
             static uint32_t options_hash = 0;
@@ -319,55 +295,36 @@ namespace spartan
             }
         }
     
-        // check if we can render (not minimized and resolution is valid)
         const uint32_t min_render_dimension = 64;
         bool resolution_valid = m_resolution_render.x >= min_render_dimension && m_resolution_render.y >= min_render_dimension;
         bool can_render = !Window::IsMinimized() && m_initialized_resources && resolution_valid;
 
-        // when the window is minimized or can't render, wait for all previous gpu work
-        // (including present) to complete before starting new commands on the graphics queue.
-        // with a larger command list pool, idle slots can cycle without implicit waits,
-        // so this prevents write-after-present hazards on swapchain images.
-        // skip on the first frame since no prior rendering has occurred and waiting here
-        // would just block on the background thread's immediate execution texture uploads
+        // prevent write-after-present hazards when idle (skip first frame, nothing to wait for)
         if (!can_render && frame_num > 0)
         {
             RHI_Device::GetQueue(RHI_Queue_Type::Graphics)->Wait();
         }
 
-        // begin the primary graphics command list
         {
-            RHI_Queue* queue_graphics = RHI_Device::GetQueue(RHI_Queue_Type::Graphics);
-            m_cmd_list_present = queue_graphics->NextCommandList();
+            m_cmd_list_present = RHI_Device::GetQueue(RHI_Queue_Type::Graphics)->NextCommandList();
             m_cmd_list_present->Begin();
         }
 
-        // begin the async compute command list (only when rendering, to avoid orphaned recordings during minimize)
         m_cmd_list_compute = nullptr;
         if (can_render)
         {
-            RHI_Queue* queue_compute = RHI_Device::GetQueue(RHI_Queue_Type::Compute);
-            m_cmd_list_compute = queue_compute->NextCommandList();
+            m_cmd_list_compute = RHI_Device::GetQueue(RHI_Queue_Type::Compute)->NextCommandList();
             m_cmd_list_compute->Begin();
         }
 
-        // reset draw data count every frame so that late writers like imgui
-        // don't accumulate across frames when can_render is false (e.g. during boot)
         m_draw_data_count = 0;
 
-        // update CPU and GPU resources (only when we can render to avoid GPU work during window transitions)
         if (can_render)
         {
-            // during world loading, the loading thread is hammering the gpu with texture uploads
-            // via immediate execution (each texture requires staging copy + layout transition).
-            // skip heavy gpu work here to avoid contention on the immediate execution mutex
-            // and the graphics queue, which can cause the loading to stall or freeze.
-            // all of this work will run on the first frame after loading completes.
+            // skip heavy gpu work during loading to avoid contention with texture uploads
             bool is_loading = ProgressTracker::IsLoading();
 
-            // after loading finishes, materials and meshes can still be streaming in for a few frames.
-            // suppress hi-z occlusion during that grace period so objects don't flicker in/out
-            // as the occluder set and draw call list stabilize. frustum culling stays active.
+            // suppress hi-z for a grace period after loading while draw calls stabilize
             {
                 static uint32_t post_load_frames = 0;
                 static bool was_loading           = true;
@@ -390,34 +347,29 @@ namespace spartan
                 m_is_hiz_suppressed = post_load_frames > 0;
             }
 
-            // build the global geometry buffer if new meshes were loaded since the last frame
+            // rebuild geometry buffer if new meshes arrived
             if (!is_loading)
             {
                 GeometryBuffer::BuildIfDirty();
             }
 
-            // if the geometry buffer was fully rebuilt (e.g. capacity exceeded), acceleration structures
-            // reference stale device addresses and need to be recreated from the new buffer
+            // geometry buffer rebuild invalidates blas device addresses
             if (GeometryBuffer::WasRebuilt())
             {
                 DestroyAccelerationStructures();
             }
 
-            // rotate per-frame buffers so each frame writes to its own copy.
-            // with 4 command list slots, up to 3 prior frames can be in-flight on the gpu.
-            // rotating through 4 buffers ensures we never write into a buffer the gpu is reading.
+            // rotate per-frame buffers to avoid cpu-gpu races
             RotateFrameBuffers();
 
-            // fill draw call list and determine ideal occluders
             UpdateDrawCalls(m_cmd_list_present);
 
-            // update tlas
             if (!is_loading)
             {
                 UpdateAccelerationStructures(m_cmd_list_present);
             }
     
-            // handle dynamic buffers and resource deletion
+            // periodic resource cleanup
             {
                 m_resource_index++;
                 bool is_sync_point = m_resource_index == renderer_resource_frame_lifetime;
@@ -435,10 +387,9 @@ namespace spartan
                 }
             }
     
-            // update bindless resources
+            // bindless resource updates
             if (!is_loading)
             {
-                // we always update on the first frame so the buffers are bound and we don't get graphics api issues
                 bool initialize = GetFrameNumber() == 0;
 
                 // lights
@@ -463,13 +414,13 @@ namespace spartan
                     m_bindless_samplers_dirty = false;
                 }
 
-                // world-space aabbs, always update those as they reflect in-game entites
+                // aabbs (always, they change with entity transforms)
                 {
                     UpdateBoundingBoxes(m_cmd_list_present);
                     RHI_Device::UpdateBindlessAABBs(GetBuffer(Renderer_Buffer::AABBs));
                 }
 
-                // draw data - upload per-draw transforms and material info to the bindless buffer
+                // draw data
                 {
                     if (m_draw_data_count > 0)
                     {
@@ -478,11 +429,11 @@ namespace spartan
                         buffer->Update(m_cmd_list_present, &m_draw_data_cpu[0], buffer->GetStride() * m_draw_data_count);
                     }
 
-                    // the buffer rotates each frame, so the descriptor must follow
+                    // descriptor must follow the rotated buffer
                     RHI_Device::UpdateBindlessDrawData(GetBuffer(Renderer_Buffer::DrawData));
                 }
 
-                // upload indirect draw buffers for gpu-driven rendering
+                // indirect draw buffers
                 if (m_indirect_draw_count > 0)
                 {
                     RHI_Buffer* args_buffer = GetBuffer(Renderer_Buffer::IndirectDrawArgs);
@@ -493,7 +444,7 @@ namespace spartan
                     data_buffer->ResetOffset();
                     data_buffer->Update(m_cmd_list_present, &m_indirect_draw_data[0], data_buffer->GetStride() * m_indirect_draw_count);
 
-                    // reset draw count to zero - the cull shader will atomically increment it
+                    // reset count, the cull shader atomically increments it
                     uint32_t zero = 0;
                     RHI_Buffer* count_buffer = GetBuffer(Renderer_Buffer::IndirectDrawCount);
                     count_buffer->ResetOffset();
@@ -501,20 +452,18 @@ namespace spartan
                 }
             }
     
-            // update frame constant buffer and add lines to render
             UpdateFrameConstantBuffer(m_cmd_list_present);
             UpdatePersistentLines();
             AddLinesToBeRendered();
         }
 
-        // xr: begin frame if session is running
+        // xr
         bool xr_should_render = false;
         if (Xr::IsSessionRunning())
         {
             xr_should_render = Xr::BeginFrame();
         }
 
-        // produce the frame if window is not minimized and resolution is valid
         {
             if (can_render)
             {
@@ -522,13 +471,11 @@ namespace spartan
             }
         }
 
-        // xr: submit rendered frame to headset
         if (xr_should_render && can_render)
         {
             BlitToXrSwapchain(m_cmd_list_present, GetRenderTarget(Renderer_RenderTarget::frame_output));
         }
 
-        // xr: end frame (must be called even if we didn't render)
         if (Xr::IsSessionRunning())
         {
             Xr::EndFrame();
@@ -536,27 +483,22 @@ namespace spartan
     
         bool is_standalone = !Engine::IsFlagSet(EngineMode::EditorVisible);
 
-        // blit to back buffer when standalone
         if (is_standalone && can_render)
         {
             BlitToBackBuffer(m_cmd_list_present, GetRenderTarget(Renderer_RenderTarget::frame_output));
         }
 
-        // present frame when standalone (always submit command list to avoid stalled commands)
         if (is_standalone)
         {
             SubmitAndPresent();
         }
     
-        // clear per-frame data
         {
             m_lines_vertices.clear();
             m_icons.clear();
         }
     
-        // increment frame counter and trigger first-frame event
-        // only count frames that actually rendered so the splash screen
-        // stays visible until the editor has real content to show
+        // only count frames that actually rendered
         if (can_render)
         {
             frame_num++;
@@ -662,14 +604,14 @@ namespace spartan
 
             if (dirty_orthographic_projection)
             { 
-                // near clip does not affect depth accuracy in orthographic projection, so set it to 0 to avoid problems which can result an infinitely small [3,2] (NaN) after the multiplication below
+                // near = 0 for ortho (avoids NaN in [3,2] element)
                 Matrix projection_ortho              = Matrix::CreateOrthographicLH(m_viewport.width, m_viewport.height, 0.0f, far_plane);
                 m_cb_frame_cpu.view_projection_ortho = Matrix::CreateLookAtLH(Vector3(0, 0, -near_plane), Vector3::Forward, Vector3::Up) * projection_ortho;
                 dirty_orthographic_projection        = false;
             }
         }
 
-        // generate jitter samples in case of fsr or xess
+        // taa jitter
         Renderer_AntiAliasing_Upsampling upsampling_mode = cvar_antialiasing_upsampling.GetValueAs<Renderer_AntiAliasing_Upsampling>();
         {
             if (upsampling_mode == Renderer_AntiAliasing_Upsampling::AA_Fsr_Upscale_Fsr)
@@ -688,7 +630,6 @@ namespace spartan
             }
         }
 
-        // update the remaining of the frame buffer
         m_cb_frame_cpu.view_projection_previous = m_cb_frame_cpu.view_projection;
         m_cb_frame_cpu.view_projection          = m_cb_frame_cpu.view * m_cb_frame_cpu.projection;
         m_cb_frame_cpu.view_projection_inv      = Matrix::Invert(m_cb_frame_cpu.view_projection);
@@ -720,16 +661,14 @@ namespace spartan
         m_cb_frame_cpu.gamma               = cvar_gamma.GetValue();
         m_cb_frame_cpu.camera_exposure     = World::GetCamera() ? World::GetCamera()->GetExposure() : 1.0f;
 
-        // cloud parameters
         m_cb_frame_cpu.cloud_coverage = cvar_cloud_coverage.GetValue();
         m_cb_frame_cpu.cloud_shadows  = cvar_cloud_shadows.GetValue();
-        // these must match what common_resources.hlsl is reading
+        // feature bits (must match common_resources.hlsl)
         m_cb_frame_cpu.set_bit(cvar_ray_traced_reflections.GetValueAs<bool>(), 1 << 0);
         m_cb_frame_cpu.set_bit(cvar_ssao.GetValueAs<bool>(),                   1 << 1);
         m_cb_frame_cpu.set_bit(cvar_ray_traced_shadows.GetValueAs<bool>(),     1 << 2);
         m_cb_frame_cpu.set_bit(cvar_restir_pt.GetValueAs<bool>(),              1 << 3);
 
-        // set
         GetBuffer(Renderer_Buffer::ConstantFrame)->Update(cmd_list, &m_cb_frame_cpu);
     }
 
@@ -815,19 +754,15 @@ namespace spartan
         {
             SP_ASSERT(m_cmd_list_present->GetState() == RHI_CommandListState::Recording);
 
-            // only submit and present if we successfully acquired a swapchain image
             if (swapchain->IsImageAcquired())
             {
                 m_cmd_list_present->InsertBarrier(swapchain->GetRhiRt(), swapchain->GetFormat(), 0, 1, 1, RHI_Image_Layout::Present_Source);
                 
-                // use per-swapchain-image semaphore to signal rendering complete
-                // this ensures the semaphore isn't reused until the image is re-acquired
                 m_cmd_list_present->Submit(swapchain->GetImageAcquiredSemaphore(), false, swapchain->GetRenderingCompleteSemaphore());
                 swapchain->Present(m_cmd_list_present);
             }
             else
             {
-                // no image acquired (window minimized/transitioning), submit without presentation semaphores
                 m_cmd_list_present->Submit(nullptr, true);
             }
         }
@@ -862,7 +797,7 @@ namespace spartan
         cmd_list->SetTexture(Renderer_BindingsSrv::gbuffer_velocity, GetRenderTarget(Renderer_RenderTarget::gbuffer_velocity));
         cmd_list->SetTexture(Renderer_BindingsSrv::gbuffer_depth,    GetRenderTarget(Renderer_RenderTarget::gbuffer_depth));
 
-        // ssao - bind white texture if ssao is disabled/null (white = no occlusion)
+        // ssao (white = no occlusion when disabled)
         RHI_Texture* tex_ssao = GetRenderTarget(Renderer_RenderTarget::ssao);
         cmd_list->SetTexture(Renderer_BindingsSrv::ssao, tex_ssao ? tex_ssao : GetStandardTexture(Renderer_StandardTexture::White));
     }
@@ -880,7 +815,7 @@ namespace spartan
         entry.aabb_index         = 0;
         entry.padding            = 0;
 
-        // write to the mapped gpu buffer directly (HOST_COHERENT makes it visible at submit time)
+        // write directly to the mapped gpu buffer
         RHI_Buffer* buffer = GetBuffer(Renderer_Buffer::DrawData);
         if (void* mapped = buffer->GetMappedData())
         {
@@ -902,10 +837,7 @@ namespace spartan
             if (unique_material_ids.find(material->GetObjectId()) != unique_material_ids.end())
                 return;
     
-            // if not, add it to the list
             unique_material_ids.insert(material->GetObjectId());
-    
-            // properties
             {
                 SP_ASSERT(count < rhi_max_array_size);
 
@@ -950,20 +882,16 @@ namespace spartan
                 properties[count].flags |= material->GetProperty(MaterialProperty::IsWater)                    ? (1U << 13) : 0;
                 properties[count].flags |= material->GetProperty(MaterialProperty::Tessellation)               ? (1U << 14) : 0;
                 properties[count].flags |= material->GetProperty(MaterialProperty::EmissiveFromAlbedo)         ? (1U << 15) : 0;
-                // when changing the bit flags, ensure that you also update the Surface struct in common_structs.hlsl, so that it reads those flags as expected
+                // keep in sync with Surface struct in common_structs.hlsl
             }
     
             // textures
             {
-                // iterate through all texture types and their slots
                 for (uint32_t type = 0; type < static_cast<uint32_t>(MaterialTextureType::Max); type++)
                 {
                     for (uint32_t slot = 0; slot < Material::slots_per_texture; slot++)
                     {
-                        // calculate the final index in the bindless array
                         uint32_t bindless_index = count + (type * Material::slots_per_texture) + slot;
-                        
-                        // get the texture from the material using type and slot
                         m_bindless_textures[bindless_index] = material->GetTexture(static_cast<MaterialTextureType>(type), slot);
                     }
                 }
@@ -971,7 +899,6 @@ namespace spartan
     
             material->SetIndex(count);
 
-            // update index increment to account for all texture slots
             count += static_cast<uint32_t>(MaterialTextureType::Max) * Material::slots_per_texture;
         };
     
@@ -994,7 +921,6 @@ namespace spartan
     
         // cpu
         {
-            // clear
             properties.fill(Sb_Material{});
             m_bindless_textures.fill(nullptr);
             unique_material_ids.clear();
@@ -1003,7 +929,6 @@ namespace spartan
     
         // gpu
         {
-            // material properties
             RHI_Buffer* buffer = Renderer::GetBuffer(Renderer_Buffer::MaterialParameters);
             buffer->ResetOffset();
             buffer->Update(cmd_list, &properties[0], buffer->GetStride() * count);
@@ -1017,7 +942,6 @@ namespace spartan
     
         m_bindless_lights.fill(Sb_Light());
         
-        // reset the active count so we can track exactly how many lights are uploaded
         m_count_active_lights    = 0; 
         Light* first_directional = nullptr;
     
@@ -1078,15 +1002,10 @@ namespace spartan
                 {
                     first_directional = light_component;
     
-                    // even if disabled (intensity 0 or !active), we must upload it to slot 0
-                    // because the shader hard-assumes slot 0 is the sun.
+                    // slot 0 is always the sun, even if disabled
                     fill_light(light_component);
-                    
-                    // if it was effectively disabled, ensure the uploaded intensity is 0
-                    // so it doesn't affect lighting calculation
                     if (!light_component->GetEntity()->GetActive())
                     {
-                        // index is guaranteed to be 0 here since it's the first one we processed
                         m_bindless_lights[0].intensity = 0.0f;
                     }
                     break;
@@ -1094,12 +1013,11 @@ namespace spartan
             }
         }
     
-        // fill remaining lights (skip disabled or out-of-range)
+        // remaining lights
         for (Entity* entity : World::GetEntitiesLights())
         {
             if (Light* light_component = entity->GetComponent<Light>())
             {
-                // skip the directional light we already handled
                 if (light_component == first_directional)
                     continue;
     
@@ -1129,11 +1047,10 @@ namespace spartan
             }
         }
     
-        // upload to gpu
+        // gpu upload
         RHI_Buffer* buffer = GetBuffer(Renderer_Buffer::LightParameters);
         buffer->ResetOffset();
         
-        // update only the active lights count so we don't upload garbage data
         if (m_count_active_lights > 0)
         {
             buffer->Update(cmd_list, &m_bindless_lights[0], buffer->GetStride() * m_count_active_lights);
@@ -1142,11 +1059,9 @@ namespace spartan
 
     void Renderer::UpdateBoundingBoxes(RHI_CommandList* cmd_list)
     {
-        // clear
         m_bindless_aabbs.fill(Sb_Aabb());
 
-        // upload aabbs from prepass draw calls (used by occlusion culling)
-        // this must match the indexing used in pass_indirect_cull
+        // prepass aabbs (must match the indexing in indirect_cull.hlsl)
         for (uint32_t i = 0; i < m_draw_calls_prepass_count; i++)
         {
             const Renderer_DrawCall& draw_call = m_draw_calls_prepass[i];
@@ -1157,9 +1072,7 @@ namespace spartan
             m_bindless_aabbs[i].is_occluder    = draw_call.is_occluder;
         }
 
-        // upload aabbs for indirect draws (used by the indirect cull compute shader)
-        // these are stored right after the prepass aabbs in the same buffer
-        // the bounding boxes come from the draw calls that were added to the indirect path
+        // indirect draw aabbs (stored right after prepass aabbs)
         {
             uint32_t indirect_idx = 0;
             for (uint32_t i = 0; i < m_draw_call_count && indirect_idx < m_indirect_draw_count; i++)
@@ -1183,7 +1096,7 @@ namespace spartan
             }
         }
 
-        // gpu
+        // gpu upload
         uint32_t total_aabb_count = m_draw_calls_prepass_count + m_indirect_draw_count;
         RHI_Buffer* buffer = GetBuffer(Renderer_Buffer::AABBs);
         buffer->ResetOffset();
@@ -1199,7 +1112,7 @@ namespace spartan
         if (ProgressTracker::IsLoading())
             return;
 
-        // build draw calls and sort them for g-buffer (transparency -> material -> depth)
+        // collect draw calls
         {
             for (Entity* entity : World::GetEntities())
             {
@@ -1208,7 +1121,6 @@ namespace spartan
 
                 if (Renderable* renderable = entity->GetComponent<Renderable>())
                 {
-                    // skip renderables with no material, can happen when loading a world and the material is not yet loaded
                     Material* material = renderable->GetMaterial();
                     if (!material)
                         continue;
@@ -1218,7 +1130,6 @@ namespace spartan
                         m_transparents_present = true;
                     }
 
-                    // write per-draw data to the bindless draw data buffer
                     uint32_t draw_data_index = WriteDrawData(
                         entity->GetMatrix(),
                         entity->GetMatrixPrevious(),
@@ -1238,38 +1149,35 @@ namespace spartan
                 }
             }
 
-            // sort by transparency, material id, and distance (front-to-back for opaque, back-to-front for transparent)
+            // sort: opaque before transparent, then material, then distance
             sort(m_draw_calls.begin(), m_draw_calls.begin() + m_draw_call_count, [](const Renderer_DrawCall& a, const Renderer_DrawCall& b)
             {
-                // step 1: sort by transparency (opaque before transparent)
                 bool a_transparent = a.renderable->GetMaterial()->IsTransparent();
                 bool b_transparent = b.renderable->GetMaterial()->IsTransparent();
                 if (a_transparent != b_transparent)
                 {
-                    return !a_transparent; // false (opaque) before true (transparent)
+                    return !a_transparent;
                 }
 
-                // step 2: sort by material id within each transparency group
                 uint64_t a_material_id = a.renderable->GetMaterial()->GetObjectId();
                 uint64_t b_material_id = b.renderable->GetMaterial()->GetObjectId();
                 if (a_material_id != b_material_id)
                 {
-                    return a_material_id < b_material_id; // lower material ids first
+                    return a_material_id < b_material_id;
                 }
 
-                // step 3: sort by distance within each material group
-                if (!a_transparent) // both are opaque
+                if (!a_transparent)
                 {
-                    return a.distance_squared < b.distance_squared; // front-to-back
+                    return a.distance_squared < b.distance_squared;
                 }
-                else // both are transparent
+                else
                 {
-                    return a.distance_squared > b.distance_squared; // back-to-front
+                    return a.distance_squared > b.distance_squared;
                 }
             });
         }
 
-        // build prepass calls: opaques only, sorted by alpha test (non-alpha first), then depth front-to-back
+        // prepass: visible opaques, sorted by alpha test then distance
         {
             for (uint32_t i = 0; i < m_draw_call_count; ++i)
             {
@@ -1280,21 +1188,19 @@ namespace spartan
                 }
             }
 
-            // sort prepass by alpha test flag, then distance_squared (front-to-back)
             sort(m_draw_calls_prepass.begin(), m_draw_calls_prepass.begin() + m_draw_calls_prepass_count, [](const Renderer_DrawCall& a, const Renderer_DrawCall& b)
             {
                 bool a_alpha = a.renderable->GetMaterial()->IsAlphaTested();
                 bool b_alpha = b.renderable->GetMaterial()->IsAlphaTested();
                 if (a_alpha != b_alpha)
                 {
-                    return !a_alpha; // non-alpha before alpha-tested
+                    return !a_alpha;
                 }
                 return a.distance_squared < b.distance_squared;
             });
         }
 
-        // populate gpu-driven indirect draw buffers for opaque, non-tessellated, non-instanced draws
-        // the compute cull shader will compact these into a contiguous output based on visibility
+        // indirect draw buffers (gpu-driven path)
         {
             m_indirect_draw_count = 0;
             for (uint32_t i = 0; i < m_draw_call_count; i++)
@@ -1303,8 +1209,6 @@ namespace spartan
                 Renderable* renderable      = dc.renderable;
                 Material* material          = renderable->GetMaterial();
 
-                // only opaque, non-tessellated, non-instanced, non-alpha-tested, back-face-culled draws
-                // go through the indirect path - everything else falls back to the cpu-driven loop
                 if (!material || material->IsTransparent())
                     continue;
                 if (IsCpuDrivenDraw(dc, material))
@@ -1314,7 +1218,6 @@ namespace spartan
                 if (idx >= rhi_max_array_size)
                     break;
 
-                // indirect draw arguments (matches VkDrawIndexedIndirectCommand)
                 Sb_IndirectDrawArgs& args = m_indirect_draw_args[idx];
                 args.index_count          = renderable->GetIndexCount(dc.lod_index);
                 args.instance_count       = dc.instance_count;
@@ -1322,8 +1225,7 @@ namespace spartan
                 args.vertex_offset        = static_cast<int32_t>(renderable->GetVertexOffset(dc.lod_index));
                 args.first_instance       = dc.instance_index;
 
-                // per-draw data (accessed by draw_id in shaders)
-                // aabb_index points past the prepass aabbs in the shared buffer
+                // per-draw data (aabb_index sits after prepass aabbs)
                 Sb_DrawData& data       = m_indirect_draw_data[idx];
                 Entity* entity          = renderable->GetEntity();
                 data.transform          = entity->GetMatrix();
@@ -1335,9 +1237,7 @@ namespace spartan
             }
         }
 
-        // select occluders by finding the top n largest screen-space bounding boxes.
-        // renderables that were occluders last frame get a score bonus so the set
-        // doesn't churn every frame (temporal hysteresis)
+        // select occluders (top N by screen area, with temporal hysteresis)
         {
             static unordered_set<Renderable*> previous_occluders;
 
@@ -1372,7 +1272,7 @@ namespace spartan
 
                 float screen_area = compute_screen_space_area(renderable->GetBoundingBox());
 
-                // give previous occluders a bonus so the set stays stable across frames
+                // temporal hysteresis: bonus for previous occluders
                 if (previous_occluders.find(renderable) != previous_occluders.end())
                 {
                     screen_area *= 1.5f;
@@ -1400,19 +1300,17 @@ namespace spartan
 
     void Renderer::UpdateAccelerationStructures(RHI_CommandList* cmd_list)
     {
-        // check if any ray tracing feature is enabled
         bool ray_tracing_enabled = cvar_ray_traced_reflections.GetValueAs<bool>() || cvar_ray_traced_shadows.GetValueAs<bool>() || cvar_restir_pt.GetValueAs<bool>();
         if (!ray_tracing_enabled)
             return;
 
-        // validate ray tracing and command list
         if (!RHI_Device::IsSupportedRayTracing() || !cmd_list)
         {
             SP_LOG_WARNING("Ray tracing or command list invalid, skipping update");
             return;
         }
 
-        // bottom-level acceleration structures
+        // blas
         {
             uint32_t blas_built   = 0;
             uint32_t blas_skipped = 0;
@@ -1444,18 +1342,16 @@ namespace spartan
             }
         }
 
-        // top-level acceleration structure
+        // tlas
         {
             if (!m_tlas)
             {
                 m_tlas = make_unique<RHI_AccelerationStructure>(RHI_AccelerationStructureType::Top, "world_tlas");
             }
 
-            // temp till we make rhi enum
-            constexpr uint32_t RHI_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT = 0x00000002; // matches VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR
+            constexpr uint32_t RHI_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT = 0x00000002; // VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR
 
-            // static to avoid per-frame heap allocation - clear() keeps capacity
-            static vector<RHI_AccelerationStructureInstance> instances;
+            static vector<RHI_AccelerationStructureInstance> instances; // static to avoid per-frame heap alloc
             static vector<Sb_GeometryInfo> geometry_infos;
             instances.clear();
             geometry_infos.clear();
@@ -1469,12 +1365,10 @@ namespace spartan
                 {
                     if (Material* material = renderable->GetMaterial())
                     {
-                        // skip if blas doesn't exist (mesh might not have sub_meshes yet)
                         uint64_t device_address = renderable->GetAccelerationStructureDeviceAddress();
                         if (device_address == 0)
                             continue;
 
-                        // skip if buffers aren't ready
                         RHI_Buffer* vertex_buffer = renderable->GetVertexBuffer();
                         RHI_Buffer* index_buffer  = renderable->GetIndexBuffer();
                         if (!vertex_buffer || !index_buffer)
@@ -1489,10 +1383,7 @@ namespace spartan
                         instance.flags                                       = cull_mode == RHI_CullMode::None ? RHI_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT : 0;
                         instance.device_address                              = device_address;
 
-                        // build row-major 3x4 transform for vulkan
-                        // engine uses row vectors (point * matrix), vulkan uses column vectors (matrix * point)
-                        // so we need to transpose the 3x3 rotation part
-                        // translation stays in the last column
+                        // row-major 3x4 transform (transpose 3x3 because vulkan uses column vectors)
                         const Matrix& m = renderable->GetEntity()->GetMatrix();
                         instance.transform[0]  = m.m00; instance.transform[1]  = m.m10; instance.transform[2]  = m.m20; instance.transform[3]  = m.m30;
                         instance.transform[4]  = m.m01; instance.transform[5]  = m.m11; instance.transform[6]  = m.m21; instance.transform[7]  = m.m31;
@@ -1500,7 +1391,6 @@ namespace spartan
 
                         instances.push_back(instance);
 
-                        // build geometry info for vertex/index buffer access in hit shader
                         Sb_GeometryInfo geo_info       = {};
                         geo_info.vertex_buffer_address = vertex_buffer->GetDeviceAddress();
                         geo_info.index_buffer_address  = index_buffer->GetDeviceAddress();
@@ -1523,7 +1413,6 @@ namespace spartan
                 }
                 m_tlas->BuildTopLevel(cmd_list, instances);
 
-                // update geometry info buffer for hit shader vertex access
                 GetBuffer(Renderer_Buffer::GeometryInfo)->Update(cmd_list, geometry_infos.data(), static_cast<uint32_t>(geometry_infos.size() * sizeof(Sb_GeometryInfo)));
             }
             else if (last_instance_count != 0)
@@ -1540,8 +1429,6 @@ namespace spartan
         const uint32_t resolution_atlas = GetRenderTarget(Renderer_RenderTarget::shadow_atlas)->GetWidth();
         const uint32_t min_slice_res    = 256;
 
-        // assume atlas is square, width == height
-    
         // collect slices
         m_shadow_slices.clear();
         for (const auto& entity : World::GetEntitiesLights())
@@ -1558,8 +1445,7 @@ namespace spartan
         if (m_shadow_slices.empty())
             return;
     
-        // lambda to check if slices of given res can fit with borders
-        uint32_t border  = 8; // pixels between slices, none at edges
+        uint32_t border = 8;
         auto can_fit = [&](uint32_t test_res, uint32_t num_slices) -> bool
         {
             if (test_res > resolution_atlas)
@@ -1574,7 +1460,6 @@ namespace spartan
                 uint32_t left_pad = (x == 0) ? 0 : border;
                 uint32_t placed_x = x + left_pad;
     
-                // wrap to next row if overflow
                 if (placed_x + test_res > resolution_atlas)
                 {
                     y        += row_h + border;
@@ -1583,7 +1468,6 @@ namespace spartan
                     placed_x  = 0;
                 }
     
-                // check if too wide after wrap
                 if (placed_x + test_res > resolution_atlas)
                     return false;
     
@@ -1591,7 +1475,6 @@ namespace spartan
                 if (placed_y + test_res > resolution_atlas)
                     return false;
     
-                // simulate placement
                 x     = placed_x + test_res;
                 row_h = max(row_h, test_res);
             }
@@ -1599,7 +1482,7 @@ namespace spartan
             return true;
         };
     
-        // binary search for max uniform slice res
+        // binary search for max uniform slice resolution
         uint32_t max_slice_res = resolution_atlas;
         if (m_shadow_slices.size() > 1)
         {
@@ -1619,15 +1502,14 @@ namespace spartan
             }
             max_slice_res = low;
         }
-        max_slice_res = max(max_slice_res, min_slice_res); // clamp to min
+        max_slice_res = max(max_slice_res, min_slice_res);
     
-        // assign res to all slices (uniform)
         for (auto& slice : m_shadow_slices)
         {
             slice.res = max_slice_res;
         }
     
-        // pack slices in scanline order
+        // pack slices
         uint32_t x     = 0;
         uint32_t y     = 0;
         uint32_t row_h = 0;
@@ -1636,7 +1518,6 @@ namespace spartan
             uint32_t left_pad = (x == 0) ? 0 : border;
             uint32_t placed_x = x + left_pad;
     
-            // wrap to next row if needed
             if (placed_x + slice.res > resolution_atlas)
             {
                 y        += row_h + border;
@@ -1645,9 +1526,6 @@ namespace spartan
                 placed_x  = 0;
             }
     
-            // no overflow checks here, as can_fit validated
-            // assert(placed_x + slice.res <= resolution_atlas && y + slice.res <= resolution_atlas);
-    
             slice.rect = math::Rectangle(
                 static_cast<float>(placed_x),
                 static_cast<float>(y),
@@ -1655,12 +1533,10 @@ namespace spartan
                 static_cast<float>(slice.res)
             );
     
-            // advance
             x     = placed_x + slice.res;
             row_h = max(row_h, slice.res);
         }
     
-        // assign rects back to lights
         for (const auto& slice : m_shadow_slices)
         {
             slice.light->SetAtlasRectangle(slice.slice_index, slice.rect);
@@ -1671,7 +1547,6 @@ namespace spartan
     {
         static uint32_t screenshot_index = 0;
 
-        // use frame_output (post-AA, post-tonemapping) for both formats
         RHI_Texture* frame_output = GetRenderTarget(Renderer_RenderTarget::frame_output);
         uint32_t width            = frame_output->GetWidth();
         uint32_t height           = frame_output->GetHeight();
@@ -1679,37 +1554,29 @@ namespace spartan
         uint32_t channel_count    = frame_output->GetChannelCount();
         size_t data_size          = static_cast<size_t>(width) * height * (bits_per_channel / 8) * channel_count;
 
-        // check if hdr mode is active (affects how png is saved)
         bool is_hdr = cvar_hdr.GetValueAs<bool>();
 
-        // create staging buffer
         auto staging = make_shared<RHI_Buffer>(RHI_Buffer_Type::Constant, data_size, 1, nullptr, true, "screenshot_staging");
 
-        // copy texture to staging buffer
         if (RHI_CommandList* cmd_list = RHI_CommandList::ImmediateExecutionBegin(RHI_Queue_Type::Graphics))
         {
             cmd_list->CopyTextureToBuffer(frame_output, staging.get());
             RHI_CommandList::ImmediateExecutionEnd(cmd_list);
         }
 
-        // get mapped data pointer
         void* mapped_data = staging->GetMappedData();
         SP_ASSERT_MSG(mapped_data, "Staging buffer not mappable");
 
-        // generate filenames with index
         uint32_t index = screenshot_index++;
         string exr_path = "screenshot_" + to_string(index) + ".exr";
         string png_path = "screenshot_" + to_string(index) + ".png";
 
-        // save screenshots in background
         spartan::ThreadPool::AddTask([=]()
         {
             SP_LOG_INFO("Saving screenshots...");
 
-            // save exr (post-tonemapped, as originally)
             ImageImporter::Save(exr_path, width, height, channel_count, bits_per_channel, mapped_data);
 
-            // save png (convert hdr/pq to sdr if needed, otherwise direct save)
             ImageImporter::SaveSdr(png_path, width, height, channel_count, bits_per_channel, mapped_data, is_hdr);
 
             SP_LOG_INFO("Screenshots saved as '%s' and '%s'", exr_path.c_str(), png_path.c_str());
@@ -1723,7 +1590,6 @@ namespace spartan
 
     void Renderer::DestroyAccelerationStructures()
     {
-        // wait for gpu to finish using the acceleration structures
         RHI_Device::QueueWaitAll();
 
         m_tlas = nullptr;

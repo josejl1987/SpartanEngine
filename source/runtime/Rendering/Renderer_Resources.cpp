@@ -85,8 +85,7 @@ namespace spartan
         buffer(Renderer_Buffer::DummyInstance)      = make_shared<RHI_Buffer>(RHI_Buffer_Type::Instance, sizeof(Instance),                           static_cast<uint32_t>(identity.size()), &identity,          true, "dummy_instance_buffer");
         buffer(Renderer_Buffer::GeometryInfo)       = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage,  static_cast<uint32_t>(sizeof(Sb_GeometryInfo)), rhi_max_array_size,                     nullptr,            true, "geometry_info");
 
-        // per-frame rotated buffers - one copy per command list slot so each frame
-        // writes to its own copy while prior frames' gpu work reads from theirs
+        // per-frame rotated buffers
         uint32_t draw_count_init = 0;
         for (uint32_t i = 0; i < renderer_draw_data_buffer_count; i++)
         {
@@ -145,7 +144,7 @@ namespace spartan
         buffer(Renderer_Buffer::IndirectDrawCount)   = fr.indirect_draw_count;
         buffer(Renderer_Buffer::AABBs)               = fr.aabbs;
 
-        // gpu-driven particle buffers (sized for the upper limit, ~6.4 mb at 100k particles)
+        // particle buffers
         const uint32_t particle_max = 100000;
         uint32_t particle_counter_init[2] = { 0, 0 };
         buffer(Renderer_Buffer::ParticleBufferA) = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_Particle)),       particle_max, nullptr,                true, "particle_buffer_a");
@@ -166,9 +165,7 @@ namespace spartan
 
     void Renderer::CreateRasterizerStates()
     {
-        // we set hardware bias to 0.0f because we are using
-        // we do normal offset bias in the shader
-        // hardware bias is linear in Z-buffer space and effectively uncontrollable across different cascades/projections
+        // bias done in shader, hardware bias is uncontrollable across cascades
         float bias              = 0.0f;
         float bias_clamp        = 0.0f;
         float bias_slope_scaled = 0.0f;
@@ -215,10 +212,8 @@ namespace spartan
             }
         }
 
-        // anisotropic
+        // anisotropic (negative mip bias when upscaling to keep textures sharp)
         {
-            // compute mip bias for enhanced texture detail in upsampling, applicable when output resolution is higher than render resolution
-            // this adjustment, beneficial even without FSR, ensures textures remain detailed at higher output resolutions by applying a negative bias
             float mip_bias_new = 0.0f;
             if (GetResolutionOutput().x > GetResolutionRender().x)
             {
@@ -239,16 +234,13 @@ namespace spartan
 
     void Renderer::UpdateOptionalRenderTargets()
     {
-        // allocate or deallocate render targets based on current feature settings
-        // this avoids wasting vram on textures for disabled features
-        
         uint32_t width  = static_cast<uint32_t>(GetResolutionRender().x);
         uint32_t height = static_cast<uint32_t>(GetResolutionRender().y);
         uint32_t flags  = RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ClearBlit;
 
         #define render_target(x) render_targets[static_cast<uint8_t>(x)]
         
-        // ssao (~16mb at 1080p) - concurrent sharing for async compute
+        // ssao
         bool need_ssao = cvar_ssao.GetValueAs<bool>();
         if (need_ssao && !render_target(Renderer_RenderTarget::ssao))
         {
@@ -259,7 +251,7 @@ namespace spartan
             render_target(Renderer_RenderTarget::ssao) = nullptr;
         }
         
-        // ray traced reflections gbuffer (~56mb at 1080p)
+        // ray traced reflections gbuffer
         bool need_rt_reflections = cvar_ray_traced_reflections.GetValueAs<bool>() && RHI_Device::IsSupportedRayTracing();
         if (need_rt_reflections && !render_target(Renderer_RenderTarget::gbuffer_reflections_position))
         {
@@ -274,7 +266,7 @@ namespace spartan
             render_target(Renderer_RenderTarget::gbuffer_reflections_albedo)   = nullptr;
         }
         
-        // restir reservoirs - full resolution for correct uv/pixel mapping (concurrent sharing: restir runs on async compute)
+        // restir reservoirs
         bool need_restir = cvar_restir_pt.GetValueAs<bool>() && RHI_Device::IsSupportedRayTracing();
         if (need_restir && !render_target(Renderer_RenderTarget::restir_reservoir0))
         {
@@ -293,7 +285,7 @@ namespace spartan
                 render_target(rt) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width, height, 1, 1, RHI_Format::R32G32B32A32_Float, restir_flags, reservoir_names[i]);
             }
             
-            // nrd denoiser textures (concurrent sharing: denoiser runs as part of restir on async compute)
+            // nrd denoiser
             render_target(Renderer_RenderTarget::nrd_viewz)                    = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width, height, 1, 1, RHI_Format::R16_Float,          restir_flags, "nrd_viewz");
             render_target(Renderer_RenderTarget::nrd_normal_roughness)         = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width, height, 1, 1, RHI_Format::R10G10B10A2_Unorm,  restir_flags, "nrd_normal_roughness");
             render_target(Renderer_RenderTarget::nrd_diff_radiance_hitdist)    = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width, height, 1, 1, RHI_Format::R16G16B16A16_Float, restir_flags, "nrd_diff_radiance_hitdist");
@@ -309,7 +301,6 @@ namespace spartan
                 render_target(rt) = nullptr;
             }
             
-            // nrd denoiser textures
             render_target(Renderer_RenderTarget::nrd_viewz)                     = nullptr;
             render_target(Renderer_RenderTarget::nrd_normal_roughness)          = nullptr;
             render_target(Renderer_RenderTarget::nrd_diff_radiance_hitdist)     = nullptr;
@@ -330,22 +321,17 @@ namespace spartan
 
         auto compute_mip_count = [](const uint32_t width, const uint32_t height, const uint32_t smallest_dimension)
         {
-            // use max dimension to ensure both width and height reach smallest_dimension
             uint32_t max_dimension = max(width, height);
             uint32_t mip_count     = 1;
-
-            // halve max_dimension until it’s at or below smallest_dimension
             while (max_dimension >= smallest_dimension)
             {
                 max_dimension /= 2;
                 mip_count++;
             }
-            // return total mip levels, including base level
             return mip_count;
         };
 
-        // amd: avoid combining RHI_Texture_Uav with color or depth render targets (RHI_Texture_Rtv), doing so forces less optimal layouts and leaves performance on the table
-        // it's acceptable for rarely used targets (e.g., renderer_rendertarget::shading_rate), but not for frequently accessed targets like g-buffer or lighting, which are read/written many times per frame
+        // avoid combining uav + rtv on frequently accessed targets (forces suboptimal layouts on amd)
 
         #define render_target(x) render_targets[static_cast<uint8_t>(x)]
         // resolution - render
@@ -379,11 +365,12 @@ namespace spartan
 
             // occlusion
             {
-                // note #1: amd is very specific with depth formats, so if something is a depth render target, it can only have one mip and flags like RHI_Texture_Uav
-                // so we create second texture with the flags we want and then blit to that, not mention that we can't even use vkBlitImage so we do a manual one (AMD is killing is us here)
-                // note #2: too many mips can degrade depth to nothing (0), which is infinite distance (in reverse-z), which breaks things
-                render_target(Renderer_RenderTarget::gbuffer_depth_occluders)     = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width_render, height_render, 1, 1, RHI_Format::D32_Float, RHI_Texture_Rtv | RHI_Texture_Srv, "depth_occluders");
-                render_target(Renderer_RenderTarget::gbuffer_depth_occluders_hiz) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width_render, height_render, 1, 5, RHI_Format::R32_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ClearBlit | RHI_Texture_PerMipViews, "depth_occluders_hiz");
+                // amd depth format restrictions: separate texture for uav + manual blit
+                render_target(Renderer_RenderTarget::gbuffer_depth_occluders) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width_render, height_render, 1, 1, RHI_Format::D32_Float, RHI_Texture_Rtv | RHI_Texture_Srv, "depth_occluders");
+
+                // full mip chain so the cull shader can pick a level where the aabb fits in ~1-2 texels
+                uint32_t hiz_mip_count = static_cast<uint32_t>(floor(log2(static_cast<float>(max(width_render, height_render))))) + 1;
+                render_target(Renderer_RenderTarget::gbuffer_depth_occluders_hiz) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, width_render, height_render, 1, hiz_mip_count, RHI_Format::R32_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ClearBlit | RHI_Texture_PerMipViews, "depth_occluders_hiz");
             }
 
             // misc
@@ -397,8 +384,7 @@ namespace spartan
             
             if (RHI_Device::IsSupportedVrs())
             {
-                // the shading rate texture dimensions must match the gpu's reported texel size
-                // each texel in the vrs texture covers a region of (texel_size_x, texel_size_y) pixels
+                // vrs texture dimensions must match the gpu's reported texel size
                 uint32_t texel_size_x = max(RHI_Device::PropertyGetMaxShadingRateTexelSizeX(), 1u);
                 uint32_t texel_size_y = max(RHI_Device::PropertyGetMaxShadingRateTexelSizeY(), 1u);
                 uint32_t vrs_width    = (width_render + texel_size_x - 1) / texel_size_x;
@@ -441,8 +427,7 @@ namespace spartan
             render_target(Renderer_RenderTarget::auto_exposure)          = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, 1, 1, 1, 1, RHI_Format::R32_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ClearBlit, "auto_exposure_1");
             render_target(Renderer_RenderTarget::auto_exposure_previous) = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, 1, 1, 1, 1, RHI_Format::R32_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ClearBlit, "auto_exposure_2");
 
-            // volumetric clouds - 3D noise textures and shadow map
-            // Note: Using R16G16B16A16_Float to avoid being detected as "material texture" which requires slice data
+            // volumetric clouds (r16g16b16a16 to avoid material texture detection)
             render_target(Renderer_RenderTarget::cloud_noise_shape)  = make_shared<RHI_Texture>(RHI_Texture_Type::Type3D, 128, 128, 128, 1, RHI_Format::R16G16B16A16_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ConcurrentSharing, "cloud_noise_shape");
             render_target(Renderer_RenderTarget::cloud_noise_detail) = make_shared<RHI_Texture>(RHI_Texture_Type::Type3D, 32,  32,  32,  1, RHI_Format::R16G16B16A16_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ConcurrentSharing, "cloud_noise_detail");
             render_target(Renderer_RenderTarget::cloud_shadow)       = make_shared<RHI_Texture>(RHI_Texture_Type::Type2D, 1024, 1024, 1, 1, RHI_Format::R16_Float, RHI_Texture_Uav | RHI_Texture_Srv | RHI_Texture_ConcurrentSharing, "cloud_shadow");
@@ -799,10 +784,8 @@ namespace spartan
 
     void Renderer::CreateFonts()
     {
-        // get standard font directory
         const string dir_font = ResourceCache::GetResourceDirectory(ResourceDirectory::Fonts) + "/";
 
-        // load a font
         uint32_t size = static_cast<uint32_t>(10 * Window::GetDpiScale());
         standard_font = make_shared<Font>(dir_font + "OpenSans/OpenSans-Medium.ttf", size, Color(0.9f, 0.9f, 0.9f, 1.0f));
     }
@@ -850,7 +833,6 @@ namespace spartan
             standard_meshes[static_cast<uint8_t>(def.type)] = mesh;
         }
 
-        // this buffers holds all debug primitives that can be drawn
         m_lines_vertex_buffer = make_shared<RHI_Buffer>();
     }
 
@@ -1012,9 +994,7 @@ namespace spartan
 
     void Renderer::ClearMaterialTextureReferences()
     {
-        // clear packed texture pointers from materials owned by renderer
-        // these are cached in ResourceCache and become dangling when it shuts down
-        // other textures (like checkboard) are renderer-owned and remain valid
+        // clear cached texture pointers that become dangling when resource cache shuts down
         if (standard_material)
         {
             standard_material->ClearPackedTextures();
