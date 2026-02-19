@@ -263,7 +263,7 @@ namespace spartan
         static void UpdateShadowAtlas();
         static void UpdateDrawCalls(RHI_CommandList* cmd_list);
         static void UpdateAccelerationStructures(RHI_CommandList* cmd_list);
-        static void RotateDrawDataBuffer();
+        static void RotateFrameBuffers();
 
         // draw calls
         static std::array<Renderer_DrawCall, renderer_max_draw_calls> m_draw_calls;
@@ -276,11 +276,24 @@ namespace spartan
         static std::array<Sb_DrawData, rhi_max_array_size> m_indirect_draw_data;
         static uint32_t m_indirect_draw_count;
 
+        // per-frame gpu buffers - rotated each frame so in-flight frames never race.
+        // grouping them in a struct makes it impossible to forget one during create/rotate/destroy.
+        struct FrameResource
+        {
+            std::shared_ptr<RHI_Buffer> draw_data;
+            std::shared_ptr<RHI_Buffer> indirect_draw_args;
+            std::shared_ptr<RHI_Buffer> indirect_draw_data;
+            std::shared_ptr<RHI_Buffer> indirect_draw_args_out;
+            std::shared_ptr<RHI_Buffer> indirect_draw_data_out;
+            std::shared_ptr<RHI_Buffer> indirect_draw_count;
+            std::shared_ptr<RHI_Buffer> aabbs;
+        };
+        static std::array<FrameResource, renderer_draw_data_buffer_count> m_frame_resources;
+        static uint32_t m_frame_resource_index;
+
         // bindless draw data (per-draw transforms, material indices, etc.)
         static std::array<Sb_DrawData, renderer_max_draw_calls> m_draw_data_cpu;
         static uint32_t m_draw_data_count;
-        static std::array<std::shared_ptr<RHI_Buffer>, renderer_draw_data_buffer_count> m_draw_data_buffers;
-        static uint32_t m_draw_data_buffer_index;
 
         // bindless
         static std::array<RHI_Texture*, rhi_max_array_size> m_bindless_textures;
@@ -329,6 +342,7 @@ namespace spartan
         static std::atomic<bool> m_initialized_resources;
         static std::mutex m_mutex_renderables;
         static bool m_transparents_present;
+        static bool m_is_hiz_suppressed;
         static RHI_CommandList* m_cmd_list_present;
         static RHI_CommandList* m_cmd_list_compute;
         static std::vector<ShadowSlice> m_shadow_slices;

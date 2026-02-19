@@ -66,8 +66,10 @@ namespace spartan
     // bindless draw data
     array<Sb_DrawData, renderer_max_draw_calls> Renderer::m_draw_data_cpu;
     uint32_t Renderer::m_draw_data_count = 0;
-    array<shared_ptr<RHI_Buffer>, renderer_draw_data_buffer_count> Renderer::m_draw_data_buffers;
-    uint32_t Renderer::m_draw_data_buffer_index = 0;
+
+    // per-frame rotated buffers
+    array<Renderer::FrameResource, renderer_draw_data_buffer_count> Renderer::m_frame_resources;
+    uint32_t Renderer::m_frame_resource_index = 0;
 
     // line and icon rendering
     shared_ptr<RHI_Buffer> Renderer::m_lines_vertex_buffer;
@@ -79,6 +81,7 @@ namespace spartan
     uint32_t Renderer::m_resource_index            = 0;
     atomic<bool> Renderer::m_initialized_resources = false;
     bool Renderer::m_transparents_present          = false;
+    bool Renderer::m_is_hiz_suppressed             = false;
     bool Renderer::m_bindless_samplers_dirty       = true;
     RHI_CommandList* Renderer::m_cmd_list_present  = nullptr;
     RHI_CommandList* Renderer::m_cmd_list_compute  = nullptr;
@@ -362,6 +365,31 @@ namespace spartan
             // all of this work will run on the first frame after loading completes.
             bool is_loading = ProgressTracker::IsLoading();
 
+            // after loading finishes, materials and meshes can still be streaming in for a few frames.
+            // suppress hi-z occlusion during that grace period so objects don't flicker in/out
+            // as the occluder set and draw call list stabilize. frustum culling stays active.
+            {
+                static uint32_t post_load_frames = 0;
+                static bool was_loading           = false;
+
+                if (is_loading)
+                {
+                    was_loading = true;
+                }
+                else if (was_loading)
+                {
+                    was_loading      = false;
+                    post_load_frames = 30;
+                }
+
+                if (post_load_frames > 0)
+                {
+                    post_load_frames--;
+                }
+
+                m_is_hiz_suppressed = post_load_frames > 0;
+            }
+
             // build the global geometry buffer if new meshes were loaded since the last frame
             if (!is_loading)
             {
@@ -375,10 +403,10 @@ namespace spartan
                 DestroyAccelerationStructures();
             }
 
-            // rotate the draw data buffer so each frame writes to its own copy.
+            // rotate per-frame buffers so each frame writes to its own copy.
             // with 4 command list slots, up to 3 prior frames can be in-flight on the gpu.
-            // rotating through 4 buffers ensures we never memcpy into a buffer the gpu is reading.
-            RotateDrawDataBuffer();
+            // rotating through 4 buffers ensures we never write into a buffer the gpu is reading.
+            RotateFrameBuffers();
 
             // fill draw call list and determine ideal occluders
             UpdateDrawCalls(m_cmd_list_present);
@@ -1307,65 +1335,65 @@ namespace spartan
             }
         }
 
-        // select occluders by finding the top n largest screen-space bounding boxes
+        // select occluders by finding the top n largest screen-space bounding boxes.
+        // renderables that were occluders last frame get a score bonus so the set
+        // doesn't churn every frame (temporal hysteresis)
         {
-            // lambda to compute screen-space area of a bounding box
+            static unordered_set<Renderable*> previous_occluders;
+
             auto compute_screen_space_area = [&](const BoundingBox& aabb_world) -> float
             {
-                // project aabb to screen space using camera function
                 float area = 0.0f;
                 if (Camera* camera = World::GetCamera())
                 {
-                    math::Rectangle rect_screen = World::GetCamera()->WorldToScreenCoordinates(aabb_world);
-
-                    // compute screen-space dimensions
+                    math::Rectangle rect_screen = camera->WorldToScreenCoordinates(aabb_world);
                     area = clamp(rect_screen.width * rect_screen.height, 0.0f, numeric_limits<float>::max());
                 }
-
                 return area;
             };
 
-            // temporary storage for draw call areas
             struct DrawCallArea
             {
                 uint32_t index;
                 float area;
             };
             static vector<DrawCallArea> areas;
-            areas.clear(); // clear old data
-            areas.reserve(m_draw_calls_prepass_count); // ensure enough capacity
+            areas.clear();
+            areas.reserve(m_draw_calls_prepass_count);
 
-            // collect screen-space areas for eligible draw calls from prepass
             for (uint32_t i = 0; i < m_draw_calls_prepass_count; i++)
             {
                 Renderer_DrawCall& draw_call = m_draw_calls_prepass[i];
                 Renderable* renderable = draw_call.renderable;
                 Material* material = renderable->GetMaterial();
 
-                // skip any draw calls that have a mesh that you can see through (transparent, instanced, non-solid)
                 if (!material || material->IsTransparent() || renderable->HasInstancing() || !draw_call.camera_visible)
                     continue;
 
-                // get bounding box
-                const BoundingBox& aabb_world = renderable->GetBoundingBox();
+                float screen_area = compute_screen_space_area(renderable->GetBoundingBox());
 
-                // compute screen-space area and store it
-                float screen_area = compute_screen_space_area(aabb_world);
+                // give previous occluders a bonus so the set stays stable across frames
+                if (previous_occluders.find(renderable) != previous_occluders.end())
+                {
+                    screen_area *= 1.5f;
+                }
+
                 areas.push_back({ i, screen_area });
             }
 
-            // sort draw calls by screen-space area (descending)
             sort(areas.begin(), areas.end(), [](const DrawCallArea& a, const DrawCallArea& b)
             {
                 return a.area > b.area;
             });
 
-            // select the top n occluders
             const uint32_t max_occluders = 64;
             uint32_t occluder_count = min(max_occluders, static_cast<uint32_t>(areas.size()));
+
+            previous_occluders.clear();
             for (uint32_t i = 0; i < occluder_count; i++)
             {
                 m_draw_calls_prepass[areas[i].index].is_occluder = true;
+                previous_occluders.insert(m_draw_calls_prepass[areas[i].index].renderable);
             }
         }
     }

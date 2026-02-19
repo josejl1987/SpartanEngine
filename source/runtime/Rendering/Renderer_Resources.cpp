@@ -83,31 +83,67 @@ namespace spartan
         buffer(Renderer_Buffer::MaterialParameters) = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage,  static_cast<uint32_t>(sizeof(Sb_Material)), rhi_max_array_size,                     nullptr,            true, "materials");
         buffer(Renderer_Buffer::LightParameters)    = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage,  static_cast<uint32_t>(sizeof(Sb_Light)),    rhi_max_array_size,                     nullptr,            true, "lights");
         buffer(Renderer_Buffer::DummyInstance)      = make_shared<RHI_Buffer>(RHI_Buffer_Type::Instance, sizeof(Instance),                           static_cast<uint32_t>(identity.size()), &identity,          true, "dummy_instance_buffer");
-        buffer(Renderer_Buffer::AABBs)              = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage,  static_cast<uint32_t>(sizeof(Sb_Aabb)),         rhi_max_array_size,                     nullptr,            true, "aabbs");
         buffer(Renderer_Buffer::GeometryInfo)       = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage,  static_cast<uint32_t>(sizeof(Sb_GeometryInfo)), rhi_max_array_size,                     nullptr,            true, "geometry_info");
 
-        // gpu-driven indirect drawing buffers
+        // per-frame rotated buffers - one copy per command list slot so each frame
+        // writes to its own copy while prior frames' gpu work reads from theirs
         uint32_t draw_count_init = 0;
-        buffer(Renderer_Buffer::IndirectDrawArgs)    = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_IndirectDrawArgs)), rhi_max_array_size, nullptr,          true, "indirect_draw_args");
-        buffer(Renderer_Buffer::IndirectDrawData)    = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),         rhi_max_array_size, nullptr,          true, "indirect_draw_data");
-        buffer(Renderer_Buffer::IndirectDrawArgsOut) = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_IndirectDrawArgs)), rhi_max_array_size, nullptr,          true, "indirect_draw_args_out");
-        buffer(Renderer_Buffer::IndirectDrawDataOut) = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),         rhi_max_array_size, nullptr,          true, "indirect_draw_data_out");
-        buffer(Renderer_Buffer::IndirectDrawCount)   = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(uint32_t)),            1,                  &draw_count_init, true, "indirect_draw_count");
-
-        // bindless draw data buffers - one per command list slot so each frame writes
-        // to its own copy while prior frames' gpu work reads from their respective copies
         for (uint32_t i = 0; i < renderer_draw_data_buffer_count; i++)
         {
-            m_draw_data_buffers[i] = make_shared<RHI_Buffer>(
-                RHI_Buffer_Type::Storage,
-                static_cast<uint32_t>(sizeof(Sb_DrawData)),
-                renderer_max_draw_calls,
-                nullptr,
-                true,
+            FrameResource& fr = m_frame_resources[i];
+
+            fr.draw_data = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),
+                renderer_max_draw_calls, nullptr, true,
                 (string("draw_data_") + to_string(i)).c_str()
             );
+
+            fr.indirect_draw_args = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_IndirectDrawArgs)),
+                rhi_max_array_size, nullptr, true,
+                (string("indirect_draw_args_") + to_string(i)).c_str()
+            );
+
+            fr.indirect_draw_data = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),
+                rhi_max_array_size, nullptr, true,
+                (string("indirect_draw_data_") + to_string(i)).c_str()
+            );
+
+            fr.indirect_draw_args_out = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_IndirectDrawArgs)),
+                rhi_max_array_size, nullptr, true,
+                (string("indirect_draw_args_out_") + to_string(i)).c_str()
+            );
+
+            fr.indirect_draw_data_out = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),
+                rhi_max_array_size, nullptr, true,
+                (string("indirect_draw_data_out_") + to_string(i)).c_str()
+            );
+
+            fr.indirect_draw_count = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(uint32_t)),
+                1, &draw_count_init, true,
+                (string("indirect_draw_count_") + to_string(i)).c_str()
+            );
+
+            fr.aabbs = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_Aabb)),
+                rhi_max_array_size, nullptr, true,
+                (string("aabbs_") + to_string(i)).c_str()
+            );
         }
-        buffer(Renderer_Buffer::DrawData) = m_draw_data_buffers[0];
+
+        // point the active buffer slots at frame 0
+        const FrameResource& fr = m_frame_resources[0];
+        buffer(Renderer_Buffer::DrawData)            = fr.draw_data;
+        buffer(Renderer_Buffer::IndirectDrawArgs)    = fr.indirect_draw_args;
+        buffer(Renderer_Buffer::IndirectDrawData)    = fr.indirect_draw_data;
+        buffer(Renderer_Buffer::IndirectDrawArgsOut) = fr.indirect_draw_args_out;
+        buffer(Renderer_Buffer::IndirectDrawDataOut) = fr.indirect_draw_data_out;
+        buffer(Renderer_Buffer::IndirectDrawCount)   = fr.indirect_draw_count;
+        buffer(Renderer_Buffer::AABBs)               = fr.aabbs;
 
         // gpu-driven particle buffers (sized for the upper limit, ~6.4 mb at 100k particles)
         const uint32_t particle_max = 100000;
@@ -883,7 +919,9 @@ namespace spartan
         standard_textures.fill(nullptr);
         standard_meshes.fill(nullptr);
         buffers.fill(nullptr);
-        m_draw_data_buffers.fill(nullptr);
+
+        m_frame_resources.fill(FrameResource{});
+
         standard_font     = nullptr;
         standard_material = nullptr;
     }
@@ -938,10 +976,18 @@ namespace spartan
         return buffers[static_cast<uint8_t>(type)].get();
     }
 
-    void Renderer::RotateDrawDataBuffer()
+    void Renderer::RotateFrameBuffers()
     {
-        m_draw_data_buffer_index = (m_draw_data_buffer_index + 1) % renderer_draw_data_buffer_count;
-        buffers[static_cast<uint8_t>(Renderer_Buffer::DrawData)] = m_draw_data_buffers[m_draw_data_buffer_index];
+        m_frame_resource_index = (m_frame_resource_index + 1) % renderer_draw_data_buffer_count;
+        const FrameResource& fr = m_frame_resources[m_frame_resource_index];
+
+        buffers[static_cast<uint8_t>(Renderer_Buffer::DrawData)]            = fr.draw_data;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawArgs)]    = fr.indirect_draw_args;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawData)]    = fr.indirect_draw_data;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawArgsOut)] = fr.indirect_draw_args_out;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawDataOut)] = fr.indirect_draw_data_out;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawCount)]   = fr.indirect_draw_count;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::AABBs)]              = fr.aabbs;
     }
 
     RHI_Texture* Renderer::GetStandardTexture(const Renderer_StandardTexture type)

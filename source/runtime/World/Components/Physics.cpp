@@ -1507,8 +1507,8 @@ namespace spartan
 
         m_wheel_radius = radius;
 
-        // update the wheel radius in vehicle config (for physics contact calculations)
-        car::cfg.wheel_radius = radius;
+        car::cfg.front_wheel_radius = radius;
+        car::cfg.rear_wheel_radius  = radius;
 
         // recalculate and update body height based on actual wheel radius
         if (car::body)
@@ -1707,6 +1707,34 @@ namespace spartan
         if (m_body_type != BodyType::Vehicle)
             return 1.0f;
         return car::get_wheel_brake_efficiency(static_cast<int>(wheel));
+    }
+
+    float Physics::GetWheelSurfaceTemp(WheelIndex wheel, int zone) const
+    {
+        if (m_body_type != BodyType::Vehicle)
+            return 0.0f;
+        return car::get_wheel_surface_temp(static_cast<int>(wheel), zone);
+    }
+
+    float Physics::GetWheelCoreTemp(WheelIndex wheel) const
+    {
+        if (m_body_type != BodyType::Vehicle)
+            return 0.0f;
+        return car::get_wheel_core_temp(static_cast<int>(wheel));
+    }
+
+    float Physics::GetTirePressure() const
+    {
+        if (m_body_type != BodyType::Vehicle)
+            return 0.0f;
+        return car::get_tire_pressure();
+    }
+
+    float Physics::GetTirePressureOptimal() const
+    {
+        if (m_body_type != BodyType::Vehicle)
+            return 0.0f;
+        return car::get_tire_pressure_optimal();
     }
 
     void Physics::SetAbsEnabled(bool enabled)

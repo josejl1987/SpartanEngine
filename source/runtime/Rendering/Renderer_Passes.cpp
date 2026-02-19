@@ -435,7 +435,7 @@ namespace spartan
         // when disabled, the indirect cull still runs but the hi-z texture stays zeroed (far plane)
         // so the occlusion test trivially passes everything and only frustum culling is active
 
-        if (!cvar_hiz_occlusion.GetValueAs<bool>())
+        if (!cvar_hiz_occlusion.GetValueAs<bool>() || m_is_hiz_suppressed)
             return;
 
         cmd_list->BeginTimeblock("hiz");
@@ -1296,7 +1296,7 @@ namespace spartan
             auto& render_targets = GetRenderTargets();
             for (uint32_t i = 0; i < 5; i++)
             {
-                cmd_list->Blit(reservoirs_spatial[i], reservoirs[i], false);
+                cmd_list->Copy(reservoirs_spatial[i], reservoirs[i], false);
 
                 uint32_t idx_cur  = static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir0) + i;
                 uint32_t idx_prev = static_cast<uint32_t>(Renderer_RenderTarget::restir_reservoir_prev0) + i;
@@ -1305,7 +1305,7 @@ namespace spartan
         }
         
         // denoise
-        Pass_Denoiser(cmd_list, tex_gi, tex_gi);
+        //Pass_Denoiser(cmd_list, tex_gi, tex_gi);
     }
 
     void Renderer::Pass_Denoiser(RHI_CommandList* cmd_list, RHI_Texture* tex_in, RHI_Texture* tex_out)
