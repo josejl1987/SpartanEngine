@@ -30,6 +30,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../Rendering/Renderer.h"
 #include "../Resource/Import/ImageImporter.h"
 #include "../Core/ProgressTracker.h"
+#include "../Core/Debugging.h"
 SP_WARNINGS_OFF
 #include "compressonator.h"
 SP_WARNINGS_ON
@@ -104,7 +105,7 @@ namespace spartan
                 CMP_CompressOptions options = {};
                 options.dwSize              = sizeof(CMP_CompressOptions);
                 options.fquality            = 0.05f;                                     // lower quality, faster compression
-                options.dwnumThreads        = max(1u, ThreadPool::GetIdleThreadCount()); // all free threads
+                options.dwnumThreads        = 1; // single thread to avoid contention with the thread pool
                 options.nEncodeWith         = CMP_HPC;                                   // encoder
 
                 SP_ASSERT(CMP_ConvertTexture(&source_texture, &destination_texture, &options, nullptr) == CMP_OK);
@@ -134,6 +135,11 @@ namespace spartan
         bool compress_bc3(RHI_Texture* texture)
         {
             SP_ASSERT(texture != nullptr);
+
+            // gpu-av instruments every dispatch with its own buffers, eating vram that
+            // the compression buffers need - fall back to cpu compression instead
+            if (Debugging::IsGpuAssistedValidationEnabled())
+                return false;
 
             RHI_Shader* shader = Renderer::GetShader(Renderer_Shader::texture_compress_bc3_c);
             if (!shader || !shader->IsCompiled())
@@ -174,7 +180,18 @@ namespace spartan
                 return false;
 
             // bail out to cpu compression if we don't have enough vram headroom
-            uint64_t required_mb = (static_cast<uint64_t>(total_input_pixels) * 4 + static_cast<uint64_t>(total_blocks) * 16) / (1024 * 1024);
+            // account for storage buffer stride alignment which inflates actual allocation sizes
+            uint64_t min_alignment    = RHI_Device::PropertyGetMinStorageBufferOffsetAlignment();
+            uint64_t input_stride     = sizeof(uint32_t);
+            uint64_t output_stride    = sizeof(uint32_t) * 4;
+            if (min_alignment > 0)
+            {
+                if (min_alignment != input_stride)
+                    input_stride = (input_stride + min_alignment - 1) & ~(min_alignment - 1);
+                if (min_alignment != output_stride)
+                    output_stride = (output_stride + min_alignment - 1) & ~(min_alignment - 1);
+            }
+            uint64_t required_mb = (static_cast<uint64_t>(total_input_pixels) * input_stride + static_cast<uint64_t>(total_blocks) * output_stride) / (1024 * 1024);
             if (RHI_Device::MemoryGetAvailableMb() < required_mb + 256)
                 return false;
 
@@ -294,6 +311,12 @@ namespace spartan
                     memcpy(mip_data->bytes.data(), src, mip_size_bytes);
                 }
             }
+
+            // free gpu memory immediately - the gpu work is already complete
+            // (ImmediateExecutionEnd waits), so bypassing the deferred deletion
+            // queue prevents vram accumulation when many textures are compressed
+            input_buffer->DestroyResourceImmediate();
+            output_buffer->DestroyResourceImmediate();
 
             texture->SetFormat(compressonator::destination_format);
             return true;
@@ -723,11 +746,10 @@ namespace spartan
 
     void RHI_Texture::PrepareForGpu()
     {
-        // skip if already prepared or currently preparing
-        if (m_resource_state != ResourceState::Max)
+        // atomically transition from idle to preparing so only one thread can enter
+        ResourceState expected = ResourceState::Max;
+        if (!m_resource_state.compare_exchange_strong(expected, ResourceState::PreparingForGpu))
             return;
-
-        m_resource_state = ResourceState::PreparingForGpu;
 
         // skip textures with invalid dimensions (failed to load)
         if (m_width == 0 || m_height == 0)
