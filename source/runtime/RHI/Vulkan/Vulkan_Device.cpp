@@ -319,6 +319,7 @@ namespace spartan
                 extensions_instance.emplace_back("VK_EXT_debug_report");
                 extensions_instance.emplace_back("VK_EXT_debug_utils");
                 extensions_instance.emplace_back("VK_EXT_layer_settings");
+                extensions_instance.emplace_back("VK_EXT_validation_features");
             }
 
             // gpu markers (also uses debug utils, but it's already added above if validation is on)
@@ -327,11 +328,25 @@ namespace spartan
                 extensions_instance.emplace_back("VK_EXT_debug_utils");
             }
 
-            // enumerate all available instance extensions once
+            // enumerate all available instance extensions (loader + ICD)
             uint32_t available_count = 0;
             vkEnumerateInstanceExtensionProperties(nullptr, &available_count, nullptr);
             vector<VkExtensionProperties> available(available_count);
             vkEnumerateInstanceExtensionProperties(nullptr, &available_count, available.data());
+
+            // layer-provided extensions (e.g. VK_EXT_layer_settings, VK_EXT_validation_features) are only
+            // returned when enumerating with the layer name, not from the loader-level enumeration above
+            if (Debugging::IsValidationLayerEnabled())
+            {
+                uint32_t layer_ext_count = 0;
+                vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &layer_ext_count, nullptr);
+                if (layer_ext_count > 0)
+                {
+                    vector<VkExtensionProperties> layer_exts(layer_ext_count);
+                    vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &layer_ext_count, layer_exts.data());
+                    available.insert(available.end(), layer_exts.begin(), layer_exts.end());
+                }
+            }
 
             // check each requested extension against the enumerated list
             vector<const char*> extensions_supported;
@@ -353,7 +368,7 @@ namespace spartan
                 }
                 else
                 {
-                    SP_LOG_ERROR("Instance extension \"%s\" is not supported", requested);
+                    SP_LOG_WARNING("Instance extension \"%s\" is not supported", requested);
                 }
             }
 
@@ -365,22 +380,12 @@ namespace spartan
     {
         // layers configuration: https://vulkan.lunarg.com/doc/view/1.3.296.0/windows/layer_configuration.html
 
-        static const char* layer_name                        = "VK_LAYER_KHRONOS_validation";
-        static const VkBool32 setting_validate_core          = VK_TRUE;
-        static const VkBool32 setting_validate_sync          = VK_TRUE;
-        static const VkBool32 setting_thread_safety          = VK_TRUE;
-        static const VkBool32 setting_enable_message_limit   = VK_TRUE;
-        static const uint32_t setting_duplicate_message_limit = 10;
-        static const char* setting_debug_action[]            = { "VK_DBG_LAYER_ACTION_LOG_MSG" };
-        static const char* setting_report_flags[]            = { "info", "warn", "perf", "error", "debug" };
-        static const char* setting_features[]                =
-        {
-            "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT",
-            "VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT",
-            //"VALIDATION_CHECK_ENABLE_VENDOR_SPECIFIC_AMD",
-            //"VALIDATION_CHECK_ENABLE_VENDOR_SPECIFIC_NVIDIA"
-        };
-        static const uint32_t setting_features_count = SP_ARRAY_SIZE(setting_features);
+        static const char* layer_name                           = "VK_LAYER_KHRONOS_validation";
+        static const VkBool32 setting_bool_true                 = VK_TRUE;
+        static const VkBool32 setting_enable_message_limit      = VK_TRUE;
+        static const uint32_t setting_duplicate_message_limit   = 10;
+        static const char* setting_debug_action[]               = { "VK_DBG_LAYER_ACTION_LOG_MSG" };
+        static const char* setting_report_flags[]               = { "info", "warn", "perf", "error", "debug" };
         
         static vector<VkLayerSettingEXT> settings_storage; // persistent storage for VkLayerSettingEXT
         vector<VkLayerSettingEXT>& get_settings()
@@ -408,34 +413,25 @@ namespace spartan
                 SP_ASSERT_MSG(!validation_layer_unavailable, "Please install the Vulkan SDK, ensure correct environment variables and restart your machine: https://vulkan.lunarg.com/sdk/home");
             }
 
-            // fill static settings
             settings_storage =
             {
-                { layer_name, "validate_core",           VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_validate_core },
-                { layer_name, "validate_sync",           VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_validate_sync },
-                { layer_name, "thread_safety",           VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_thread_safety },
-                { layer_name, "debug_action",            VK_LAYER_SETTING_TYPE_STRING_EXT, 1, setting_debug_action },
-                { layer_name, "report_flags",            VK_LAYER_SETTING_TYPE_STRING_EXT, 5, setting_report_flags },
-                { layer_name, "enable_message_limit",    VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_enable_message_limit },
-                { layer_name, "duplicate_message_limit", VK_LAYER_SETTING_TYPE_UINT32_EXT, 1, &setting_duplicate_message_limit },
-                { layer_name, "enables",                 VK_LAYER_SETTING_TYPE_STRING_EXT, setting_features_count, setting_features }
+                { layer_name, "validate_core",                  VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_bool_true },
+                { layer_name, "validate_sync",                  VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_bool_true },
+                { layer_name, "validate_best_practices",        VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_bool_true },
+                { layer_name, "validate_best_practices_amd",    VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_bool_true },
+                { layer_name, "validate_best_practices_arm",    VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_bool_true },
+                { layer_name, "validate_best_practices_img",    VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_bool_true },
+                { layer_name, "validate_best_practices_nvidia", VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_bool_true },
+                { layer_name, "thread_safety",                  VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_bool_true },
+                { layer_name, "debug_action",                   VK_LAYER_SETTING_TYPE_STRING_EXT, 1, setting_debug_action },
+                { layer_name, "report_flags",                   VK_LAYER_SETTING_TYPE_STRING_EXT, 5, setting_report_flags },
+                { layer_name, "enable_message_limit",           VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_enable_message_limit },
+                { layer_name, "duplicate_message_limit",        VK_LAYER_SETTING_TYPE_UINT32_EXT, 1, &setting_duplicate_message_limit },
             };
-        
-            // optionally append GPU-assisted validation
+
             if (Debugging::IsGpuAssistedValidationEnabled())
             {
-                static const char* setting_enable_gpu_assisted = "VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT";
-        
-                // append to the enables array safely
-                static const char* combined_enables[5];
-                for (int i = 0; i < setting_features_count; ++i)
-                {
-                    combined_enables[i] = setting_features[i];
-                }
-                combined_enables[setting_features_count] = setting_enable_gpu_assisted;
-        
-                // replace the last entry in settings_storage
-                settings_storage.back() = { layer_name, "enables", VK_LAYER_SETTING_TYPE_STRING_EXT, setting_features_count + 1, combined_enables };
+                settings_storage.push_back({ layer_name, "gpuav_enable", VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_bool_true });
             }
         
             return settings_storage;
@@ -1435,6 +1431,24 @@ namespace spartan
     {
         // instance
         {
+            // if VK_LAYER_PATH points to a non-existent directory (stale sdk install), clear it
+            // so the loader falls back to the windows registry which has the correct layer paths
+            {
+                char* layer_path = nullptr;
+                size_t len       = 0;
+                _dupenv_s(&layer_path, &len, "VK_LAYER_PATH");
+                if (layer_path)
+                {
+                    struct stat info;
+                    if (stat(layer_path, &info) != 0 || !(info.st_mode & S_IFDIR))
+                    {
+                        SP_LOG_WARNING("VK_LAYER_PATH points to \"%s\" which doesn't exist, clearing it", layer_path);
+                        _putenv_s("VK_LAYER_PATH", "");
+                    }
+                    free(layer_path);
+                }
+            }
+
             VkInstanceCreateInfo info_instance      = {};
             info_instance.sType                     = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
             VkApplicationInfo app_info              = create_application_info();
@@ -1474,14 +1488,14 @@ namespace spartan
             info_instance.ppEnabledLayerNames     = validation_layer_available ? &validation_layer::layer_name : nullptr;
 
             // configure validation layer settings
-            bool layer_settings_supported = false;
+            bool layer_settings_supported      = false;
+            bool validation_features_supported  = false;
             for (const auto& ext : extensions_instance)
             {
                 if (strcmp(ext, "VK_EXT_layer_settings") == 0)
-                {
                     layer_settings_supported = true;
-                    break;
-                }
+                if (strcmp(ext, "VK_EXT_validation_features") == 0)
+                    validation_features_supported = true;
             }
 
             VkLayerSettingsCreateInfoEXT info_settings         = {};
@@ -1492,16 +1506,16 @@ namespace spartan
             {
                 if (layer_settings_supported)
                 {
-                    // preferred path: fine-grained layer configuration via VK_EXT_layer_settings
+                    // preferred: fine-grained layer configuration via VK_EXT_layer_settings
                     info_settings.sType        = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT;
                     settings                   = validation_layer::get_settings();
                     info_settings.pSettings    = settings.data();
                     info_settings.settingCount = static_cast<uint32_t>(settings.size());
                     info_instance.pNext        = &info_settings;
                 }
-                else
+                else if (validation_features_supported)
                 {
-                    // fallback: VkValidationFeaturesEXT is consumed by the layer directly (not the loader)
+                    // fallback: VkValidationFeaturesEXT for loaders that don't expose VK_EXT_layer_settings
                     enabled_features.push_back(VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT);
                     enabled_features.push_back(VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT);
                     if (Debugging::IsGpuAssistedValidationEnabled())

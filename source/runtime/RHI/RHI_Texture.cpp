@@ -30,6 +30,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../Rendering/Renderer.h"
 #include "../Resource/Import/ImageImporter.h"
 #include "../Core/ProgressTracker.h"
+#include "../Core/Debugging.h"
 SP_WARNINGS_OFF
 #include "compressonator.h"
 SP_WARNINGS_ON
@@ -134,6 +135,11 @@ namespace spartan
         bool compress_bc3(RHI_Texture* texture)
         {
             SP_ASSERT(texture != nullptr);
+
+            // gpu-av instruments every dispatch with its own buffers, eating vram that
+            // the compression buffers need - fall back to cpu compression instead
+            if (Debugging::IsGpuAssistedValidationEnabled())
+                return false;
 
             RHI_Shader* shader = Renderer::GetShader(Renderer_Shader::texture_compress_bc3_c);
             if (!shader || !shader->IsCompiled())
