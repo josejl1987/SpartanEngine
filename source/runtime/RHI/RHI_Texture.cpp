@@ -104,7 +104,7 @@ namespace spartan
                 CMP_CompressOptions options = {};
                 options.dwSize              = sizeof(CMP_CompressOptions);
                 options.fquality            = 0.05f;                                     // lower quality, faster compression
-                options.dwnumThreads        = max(1u, ThreadPool::GetIdleThreadCount()); // all free threads
+                options.dwnumThreads        = 1; // single thread to avoid contention with the thread pool
                 options.nEncodeWith         = CMP_HPC;                                   // encoder
 
                 SP_ASSERT(CMP_ConvertTexture(&source_texture, &destination_texture, &options, nullptr) == CMP_OK);
@@ -723,11 +723,10 @@ namespace spartan
 
     void RHI_Texture::PrepareForGpu()
     {
-        // skip if already prepared or currently preparing
-        if (m_resource_state != ResourceState::Max)
+        // atomically transition from idle to preparing so only one thread can enter
+        ResourceState expected = ResourceState::Max;
+        if (!m_resource_state.compare_exchange_strong(expected, ResourceState::PreparingForGpu))
             return;
-
-        m_resource_state = ResourceState::PreparingForGpu;
 
         // skip textures with invalid dimensions (failed to load)
         if (m_width == 0 || m_height == 0)

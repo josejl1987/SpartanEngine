@@ -314,14 +314,15 @@ namespace spartan
 
         vector<const char*> get_extensions_instance()
         {
-            // validation layer messaging/logging
             if (Debugging::IsValidationLayerEnabled())
             {
                 extensions_instance.emplace_back("VK_EXT_debug_report");
+                extensions_instance.emplace_back("VK_EXT_debug_utils");
+                extensions_instance.emplace_back("VK_EXT_layer_settings");
             }
 
-            // object naming (for the validation messages) and gpu markers
-            if (Debugging::IsGpuMarkingEnabled())
+            // gpu markers (also uses debug utils, but it's already added above if validation is on)
+            if (Debugging::IsGpuMarkingEnabled() && !Debugging::IsValidationLayerEnabled())
             {
                 extensions_instance.emplace_back("VK_EXT_debug_utils");
             }
@@ -369,7 +370,7 @@ namespace spartan
         static const VkBool32 setting_validate_sync          = VK_TRUE;
         static const VkBool32 setting_thread_safety          = VK_TRUE;
         static const VkBool32 setting_enable_message_limit   = VK_TRUE;
-        static const int32_t setting_duplicate_message_limit = 10;
+        static const uint32_t setting_duplicate_message_limit = 10;
         static const char* setting_debug_action[]            = { "VK_DBG_LAYER_ACTION_LOG_MSG" };
         static const char* setting_report_flags[]            = { "info", "warn", "perf", "error", "debug" };
         static const char* setting_features[]                =
@@ -416,7 +417,7 @@ namespace spartan
                 { layer_name, "debug_action",            VK_LAYER_SETTING_TYPE_STRING_EXT, 1, setting_debug_action },
                 { layer_name, "report_flags",            VK_LAYER_SETTING_TYPE_STRING_EXT, 5, setting_report_flags },
                 { layer_name, "enable_message_limit",    VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_enable_message_limit },
-                { layer_name, "duplicate_message_limit", VK_LAYER_SETTING_TYPE_INT32_EXT,  1, &setting_duplicate_message_limit },
+                { layer_name, "duplicate_message_limit", VK_LAYER_SETTING_TYPE_UINT32_EXT, 1, &setting_duplicate_message_limit },
                 { layer_name, "enables",                 VK_LAYER_SETTING_TYPE_STRING_EXT, setting_features_count, setting_features }
             };
         
@@ -514,7 +515,7 @@ namespace spartan
                     create_info.messageType                        = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
                     create_info.pfnUserCallback                    = log;
 
-                    functions::create_messenger(RHI_Context::instance, &create_info, nullptr, &messenger);
+                    SP_ASSERT_VK(functions::create_messenger(RHI_Context::instance, &create_info, nullptr, &messenger));
                 }
             }
 
@@ -1443,20 +1444,77 @@ namespace spartan
             vector<const char*> extensions_instance = extensions::get_extensions_instance();
             info_instance.enabledExtensionCount     = static_cast<uint32_t>(extensions_instance.size());
             info_instance.ppEnabledExtensionNames   = extensions_instance.data();
-            info_instance.enabledLayerCount         = Debugging::IsValidationLayerEnabled() ? 1 : 0;
-            info_instance.ppEnabledLayerNames       = Debugging::IsValidationLayerEnabled() ? &validation_layer::layer_name : nullptr;
-
-            // settings
-            VkLayerSettingsCreateInfoEXT info_settings = {};
-            info_settings.sType                        = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT;
-            info_instance.pNext                        = &info_settings;
-            vector<VkLayerSettingEXT> settings;
+            // check if the validation layer is actually installed before trying to enable it,
+            // some loaders silently accept a missing layer instead of returning VK_ERROR_LAYER_NOT_PRESENT
+            bool validation_layer_available = false;
             if (Debugging::IsValidationLayerEnabled())
-            { 
-                settings = validation_layer::get_settings();
+            {
+                uint32_t layer_count = 0;
+                vkEnumerateInstanceLayerProperties(&layer_count, nullptr);
+                vector<VkLayerProperties> layers(layer_count);
+                vkEnumerateInstanceLayerProperties(&layer_count, layers.data());
+
+                for (const VkLayerProperties& layer : layers)
+                {
+                    if (strcmp(validation_layer::layer_name, layer.layerName) == 0)
+                    {
+                        validation_layer_available = true;
+                        break;
+                    }
+                }
+
+                if (!validation_layer_available)
+                {
+                    SP_LOG_ERROR("Validation layer requested but VK_LAYER_KHRONOS_validation is not installed. "
+                                 "Install the Vulkan SDK from https://vulkan.lunarg.com/sdk/home and restart.");
+                }
             }
-            info_settings.pSettings    = settings.data();
-            info_settings.settingCount = static_cast<uint32_t>(settings.size());
+
+            info_instance.enabledLayerCount       = validation_layer_available ? 1 : 0;
+            info_instance.ppEnabledLayerNames     = validation_layer_available ? &validation_layer::layer_name : nullptr;
+
+            // configure validation layer settings
+            bool layer_settings_supported = false;
+            for (const auto& ext : extensions_instance)
+            {
+                if (strcmp(ext, "VK_EXT_layer_settings") == 0)
+                {
+                    layer_settings_supported = true;
+                    break;
+                }
+            }
+
+            VkLayerSettingsCreateInfoEXT info_settings         = {};
+            vector<VkLayerSettingEXT> settings;
+            VkValidationFeaturesEXT info_validation_features   = {};
+            vector<VkValidationFeatureEnableEXT> enabled_features;
+            if (validation_layer_available)
+            {
+                if (layer_settings_supported)
+                {
+                    // preferred path: fine-grained layer configuration via VK_EXT_layer_settings
+                    info_settings.sType        = VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT;
+                    settings                   = validation_layer::get_settings();
+                    info_settings.pSettings    = settings.data();
+                    info_settings.settingCount = static_cast<uint32_t>(settings.size());
+                    info_instance.pNext        = &info_settings;
+                }
+                else
+                {
+                    // fallback: VkValidationFeaturesEXT is consumed by the layer directly (not the loader)
+                    enabled_features.push_back(VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT);
+                    enabled_features.push_back(VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT);
+                    if (Debugging::IsGpuAssistedValidationEnabled())
+                    {
+                        enabled_features.push_back(VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT);
+                    }
+
+                    info_validation_features.sType                         = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
+                    info_validation_features.enabledValidationFeatureCount  = static_cast<uint32_t>(enabled_features.size());
+                    info_validation_features.pEnabledValidationFeatures     = enabled_features.data();
+                    info_instance.pNext                                    = &info_validation_features;
+                }
+            }
 
             // create the vulkan instance
             SP_ASSERT_VK(vkCreateInstance(&info_instance, nullptr, &RHI_Context::instance));
@@ -1957,15 +2015,20 @@ namespace spartan
         // allocate
         VmaAllocation allocation = nullptr;
         VmaAllocationInfo allocation_info;
-        SP_ASSERT_VK(vmaCreateBuffer(
+        VkResult result = vmaCreateBuffer(
             vulkan_memory_allocator::allocator,
                 &buffer_create_info,
                 &allocation_create_info,
                 reinterpret_cast<VkBuffer*>(&resource),
                 &allocation,
-                &allocation_info)
-        );
-        SP_ASSERT(allocation != nullptr);
+                &allocation_info);
+
+        if (result != VK_SUCCESS)
+        {
+            SP_LOG_WARNING("vmaCreateBuffer failed for '%s' (%llu bytes): %s", name, size, vkresult_to_string(result));
+            resource = nullptr;
+            return;
+        }
 
         // if a pointer to the buffer data has been passed, map the buffer and copy over the data
         if (data)

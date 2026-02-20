@@ -198,7 +198,8 @@ namespace spartan
             copy_region.dstOffset       = offset_bytes;
             copy_region.size            = size_bytes;
 
-            RHI_CommandList* cmd_list = RHI_CommandList::ImmediateExecutionBegin(RHI_Queue_Type::Copy);
+            // use graphics queue to avoid a cross-queue sync hazard with draw commands that read the same buffer
+            RHI_CommandList* cmd_list = RHI_CommandList::ImmediateExecutionBegin(RHI_Queue_Type::Graphics);
             vkCmdCopyBuffer(static_cast<VkCommandBuffer>(cmd_list->GetRhiResource()), *buffer_staging_vk, *buffer_vk, 1, &copy_region);
             RHI_CommandList::ImmediateExecutionEnd(cmd_list);
 
