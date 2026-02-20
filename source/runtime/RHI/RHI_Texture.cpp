@@ -180,7 +180,18 @@ namespace spartan
                 return false;
 
             // bail out to cpu compression if we don't have enough vram headroom
-            uint64_t required_mb = (static_cast<uint64_t>(total_input_pixels) * 4 + static_cast<uint64_t>(total_blocks) * 16) / (1024 * 1024);
+            // account for storage buffer stride alignment which inflates actual allocation sizes
+            uint64_t min_alignment    = RHI_Device::PropertyGetMinStorageBufferOffsetAlignment();
+            uint64_t input_stride     = sizeof(uint32_t);
+            uint64_t output_stride    = sizeof(uint32_t) * 4;
+            if (min_alignment > 0)
+            {
+                if (min_alignment != input_stride)
+                    input_stride = (input_stride + min_alignment - 1) & ~(min_alignment - 1);
+                if (min_alignment != output_stride)
+                    output_stride = (output_stride + min_alignment - 1) & ~(min_alignment - 1);
+            }
+            uint64_t required_mb = (static_cast<uint64_t>(total_input_pixels) * input_stride + static_cast<uint64_t>(total_blocks) * output_stride) / (1024 * 1024);
             if (RHI_Device::MemoryGetAvailableMb() < required_mb + 256)
                 return false;
 
@@ -300,6 +311,12 @@ namespace spartan
                     memcpy(mip_data->bytes.data(), src, mip_size_bytes);
                 }
             }
+
+            // free gpu memory immediately - the gpu work is already complete
+            // (ImmediateExecutionEnd waits), so bypassing the deferred deletion
+            // queue prevents vram accumulation when many textures are compressed
+            input_buffer->DestroyResourceImmediate();
+            output_buffer->DestroyResourceImmediate();
 
             texture->SetFormat(compressonator::destination_format);
             return true;

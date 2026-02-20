@@ -42,6 +42,15 @@ namespace spartan
         }
     }
 
+    void RHI_Buffer::DestroyResourceImmediate()
+    {
+        if (m_rhi_resource)
+        {
+            RHI_Device::MemoryBufferDestroy(m_rhi_resource);
+            m_data_gpu = nullptr;
+        }
+    }
+
     void RHI_Buffer::RHI_CreateResource(const void* data)
     {
         RHI_DestroyResource();
