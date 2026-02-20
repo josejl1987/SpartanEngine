@@ -24,6 +24,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "Car.h"
 #include "CarSimulation.h"
 #include "CarEngineSoundSynthesis.h"
+#include "CarTireSquealSynthesis.h"
 #include "../Input/Input.h"
 #include "../Rendering/Renderer.h"
 #include "../Resource/ResourceCache.h"
@@ -40,9 +41,6 @@ namespace spartan
 {
     // static member initialization
     std::vector<Car*> Car::s_cars;
-
-    // engine sound toggle: false = audio recording, true = synthesis
-    static bool use_synthesized_engine_sound = true;
 
     // external references from game state (defined in Game.cpp)
     extern Entity* default_camera;
@@ -328,7 +326,6 @@ namespace spartan
         {
             if (AudioSource* audio = sound_engine->GetComponent<AudioSource>())
             {
-                audio->StopClip();
                 audio->StopSynthesis();
             }
         }
@@ -709,8 +706,9 @@ namespace spartan
 
     void Car::CreateAudioSources(Entity* parent_entity)
     {
-        // initialize the engine sound synthesizer
+        // initialize sound synthesizers
         engine_sound::initialize(48000);
+        tire_squeal_sound::initialize(48000);
 
         // engine start (still uses a sample for the starter motor sound)
         {
@@ -724,7 +722,7 @@ namespace spartan
             audio_source->SetPlayOnStart(false);
         }
 
-        // engine sound (either synthesized or from audio clip)
+        // engine sound (synthesized)
         {
             Entity* sound = World::CreateEntity();
             sound->SetObjectName("sound_engine");
@@ -734,9 +732,6 @@ namespace spartan
             audio_source->SetLoop(true);
             audio_source->SetPlayOnStart(false);
             audio_source->SetVolume(0.8f);
-
-            // set up audio clip for recording mode (default)
-            audio_source->SetAudioClip("project\\music\\car_idle.wav");
         }
 
         // door open/close
@@ -751,14 +746,13 @@ namespace spartan
             audio_source->SetPlayOnStart(false);
         }
 
-        // tire squeal
+        // tire squeal (synthesized)
         {
             Entity* sound = World::CreateEntity();
             sound->SetObjectName("sound_tire_squeal");
             sound->SetParent(parent_entity);
 
             AudioSource* audio_source = sound->AddComponent<AudioSource>();
-            audio_source->SetAudioClip("project\\music\\tire_squeal.wav");
             audio_source->SetLoop(true);
             audio_source->SetPlayOnStart(false);
             audio_source->SetVolume(0.0f);
@@ -814,8 +808,7 @@ namespace spartan
         if (m_show_telemetry && m_is_occupied)
         {
             DrawTelemetry();
-            if (use_synthesized_engine_sound)
-                engine_sound::debug_window();
+            engine_sound::debug_window();
         }
 
         // osd hint
@@ -980,42 +973,23 @@ namespace spartan
             float redline_rpm = physics->GetRedlineRPM();
             float rpm_normalized = std::clamp((engine_rpm - idle_rpm) / (redline_rpm - idle_rpm), 0.0f, 1.0f);
 
-            if (use_synthesized_engine_sound)
+            audio_engine->SetSynthesisMode(true, [](float* buffer, int num_samples)
             {
-                // enable synthesis mode (this stops clip if playing and switches mode)
-                audio_engine->SetSynthesisMode(true, [](float* buffer, int num_samples)
-                {
-                    engine_sound::generate(buffer, num_samples, true);
-                });
+                engine_sound::generate(buffer, num_samples, true);
+            });
 
-                if (!audio_engine->IsPlaying())
-                    audio_engine->StartSynthesis();
+            if (!audio_engine->IsPlaying())
+                audio_engine->StartSynthesis();
 
-                // update synthesizer parameters
-                float load = throttle * (0.5f + rpm_normalized * 0.5f);
-                engine_sound::set_parameters(engine_rpm, throttle, load, boost);
+            // update synthesizer parameters
+            float load = throttle * (0.5f + rpm_normalized * 0.5f);
+            engine_sound::set_parameters(engine_rpm, throttle, load, boost);
 
-                float volume = 0.6f + rpm_normalized * 0.3f + throttle * 0.1f;
-                audio_engine->SetVolume(volume);
-            }
-            else
-            {
-                // disable synthesis mode (this stops synthesis if playing and switches mode)
-                audio_engine->SetSynthesisMode(false, nullptr);
-
-                if (!audio_engine->IsPlaying())
-                    audio_engine->PlayClip();
-
-                // adjust pitch and volume based on rpm
-                float pitch = 0.5f + rpm_normalized * 1.5f;  // 0.5x at idle, 2.0x at redline
-                float volume = 0.4f + rpm_normalized * 0.4f + throttle * 0.2f;
-                audio_engine->SetPitch(pitch);
-                audio_engine->SetVolume(volume);
-            }
+            float volume = 0.6f + rpm_normalized * 0.3f + throttle * 0.1f;
+            audio_engine->SetVolume(volume);
         }
         else if (!m_is_occupied && audio_engine && audio_engine->IsPlaying())
         {
-            audio_engine->StopClip();
             audio_engine->StopSynthesis();
         }
 
@@ -1026,7 +1000,7 @@ namespace spartan
 
             float max_slip_angle = 0.0f;
             float max_slip_ratio = 0.0f;
-            int grounded_count = 0;
+            int grounded_count   = 0;
 
             for (int i = 0; i < 4; i++)
             {
@@ -1057,25 +1031,32 @@ namespace spartan
                 }
             }
 
+            // smooth the intensity to avoid abrupt changes
             float fade_rate = (target_intensity > m_tire_squeal_volume) ? 0.04f : 0.025f;
             m_tire_squeal_volume += (target_intensity - m_tire_squeal_volume) * fade_rate;
 
-            const float max_volume = 0.25f;
-            float volume = m_tire_squeal_volume * max_volume;
+            // feed parameters into the synthesizer
+            float speed_normalized = std::clamp(speed_kmh / 200.0f, 0.0f, 1.0f);
+            tire_squeal_sound::set_parameters(m_tire_squeal_volume, speed_normalized);
 
             if (m_tire_squeal_volume > 0.02f)
             {
-                if (!audio_tire->IsPlaying())
-                    audio_tire->PlayClip();
+                audio_tire->SetSynthesisMode(true, [](float* buffer, int num_samples)
+                {
+                    tire_squeal_sound::generate(buffer, num_samples, true);
+                });
 
-                audio_tire->SetVolume(volume);
-                audio_tire->SetPitch(0.95f + m_tire_squeal_volume * 0.15f);
+                if (!audio_tire->IsPlaying())
+                    audio_tire->StartSynthesis();
+
+                const float max_volume = 0.25f;
+                audio_tire->SetVolume(m_tire_squeal_volume * max_volume);
             }
             else
             {
                 m_tire_squeal_volume = 0.0f;
                 if (audio_tire->IsPlaying())
-                    audio_tire->StopClip();
+                    audio_tire->StopSynthesis();
             }
         }
     }
@@ -1611,6 +1592,26 @@ namespace spartan
 
             ImGui::Separator();
 
+            // car preset selector
+            ImGui::SetNextItemWidth(220);
+            if (ImGui::BeginCombo("Car Preset", car::tuning::spec.name))
+            {
+                for (int i = 0; i < car::preset_count; i++)
+                {
+                    bool is_selected = (i == car::active_preset_index);
+                    if (ImGui::Selectable(car::preset_registry[i].name, is_selected))
+                    {
+                        car::active_preset_index = i;
+                        car::load_car(*car::preset_registry[i].instance);
+                    }
+                    if (is_selected)
+                        ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+
+            ImGui::Separator();
+
             // driver assists
             bool abs_enabled = physics->GetAbsEnabled();
             bool tc_enabled  = physics->GetTcEnabled();
@@ -1649,7 +1650,26 @@ namespace spartan
                 ImGui::TextColored(boost > 0.5f ? ImVec4(0.3f, 1, 0.3f, 1) : ImVec4(0.7f, 0.7f, 0.7f, 1), "%.2f bar", boost);
             }
 
-            ImGui::Checkbox("Synth Audio", &use_synthesized_engine_sound);
+            bool drs_enabled = physics->GetDrsEnabled();
+            if (ImGui::Checkbox("DRS", &drs_enabled))
+                physics->SetDrsEnabled(drs_enabled);
+            if (drs_enabled)
+            {
+                bool drs_active = physics->GetDrsActive();
+                ImGui::SameLine();
+                if (drs_active)
+                    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1), "OPEN");
+                else
+                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1), "closed");
+            }
+
+            // differential type selector
+            ImGui::SameLine(140);
+            int diff_type = physics->GetDiffType();
+            const char* diff_items[] = { "Open", "Locked", "LSD" };
+            ImGui::SetNextItemWidth(80);
+            if (ImGui::Combo("Diff", &diff_type, diff_items, 3))
+                physics->SetDiffType(diff_type);
 
             if (physics->GetVehicleHandbrake() > 0.1f)
             {
@@ -1677,7 +1697,7 @@ namespace spartan
             // car dimensions for visualization
             float car_length = car::cfg.length;
             float car_width = car::cfg.width;
-            float car_height = car::cfg.height + car::cfg.wheel_radius * 2.0f;
+            float car_height = car::cfg.height + (car::cfg.front_wheel_radius + car::cfg.rear_wheel_radius);
             
             // get shape data for drawing (convex hull from actual mesh)
             const car::shape_2d& shape = car::get_shape_data();
@@ -1972,7 +1992,42 @@ namespace spartan
                 const ImU32 color_slip_angle = IM_COL32(255, 200, 100, 255);  // orange - slip angle
                 const ImU32 color_slip_ratio = IM_COL32(200, 100, 255, 255);  // purple - slip ratio
 
-                // helper: draw a tire with force arrows
+                // gt-style wear color: blue (0% wear, perfect) -> green (40%, ok) -> red (100%, destroyed)
+                auto get_wear_color = [](float wear) -> ImU32
+                {
+                    // clamp and compute color bands
+                    wear = std::clamp(wear, 0.0f, 1.0f);
+                    
+                    int r, g, b;
+                    if (wear < 0.4f)
+                    {
+                        // blue -> green (0% to 40%)
+                        float t = wear / 0.4f;
+                        r = static_cast<int>(30  + t * (50  - 30));
+                        g = static_cast<int>(80  + t * (200 - 80));
+                        b = static_cast<int>(220 + t * (80  - 220));
+                    }
+                    else if (wear < 0.7f)
+                    {
+                        // green -> yellow/orange (40% to 70%)
+                        float t = (wear - 0.4f) / 0.3f;
+                        r = static_cast<int>(50  + t * (220 - 50));
+                        g = static_cast<int>(200 + t * (160 - 200));
+                        b = static_cast<int>(80  + t * (30  - 80));
+                    }
+                    else
+                    {
+                        // orange -> red (70% to 100%)
+                        float t = (wear - 0.7f) / 0.3f;
+                        r = static_cast<int>(220 + t * (200 - 220));
+                        g = static_cast<int>(160 - t * 130);
+                        b = static_cast<int>(30  - t * 10);
+                    }
+                    
+                    return IM_COL32(r, g, b, 255);
+                };
+
+                // helper: draw a tire with wear color fill and force arrows
                 auto draw_tire = [&](const char* label, WheelIndex wheel, float offset_x, float offset_y)
                 {
                     ImVec2 center = ImVec2(section_start.x + offset_x + tire_width * 0.5f, section_start.y + offset_y + tire_height * 0.5f);
@@ -1980,9 +2035,54 @@ namespace spartan
                     ImVec2 br = ImVec2(tl.x + tire_width, tl.y + tire_height);
 
                     bool grounded = physics->IsWheelGrounded(wheel);
-                    draw_list->AddRectFilled(tl, br, grounded ? IM_COL32(60, 60, 60, 255) : IM_COL32(80, 40, 40, 255), 8.0f);
-                    draw_list->AddRect(tl, br, grounded ? IM_COL32(120, 120, 120, 255) : IM_COL32(150, 80, 80, 255), 8.0f, 0, 3.0f);
+                    float wear = physics->GetWheelWear(wheel);
+                    
+                    // tire fill - gradient from wear color (top = tread surface) to dark (sidewall)
+                    ImU32 wear_color = get_wear_color(wear);
+                    int wear_r = (wear_color >> 0) & 0xFF;
+                    int wear_g = (wear_color >> 8) & 0xFF;
+                    int wear_b = (wear_color >> 16) & 0xFF;
 
+                    // draw the tire as vertical gradient strips for a rubber-like look
+                    const int strips = 8;
+                    float strip_h = tire_height / strips;
+                    for (int s = 0; s < strips; s++)
+                    {
+                        // center strips are brighter (contact patch), edges are darker (shoulders)
+                        float dist_from_center = fabsf(s - (strips - 1) * 0.5f) / ((strips - 1) * 0.5f);
+                        float brightness = 1.0f - dist_from_center * 0.4f;
+                        
+                        int sr = static_cast<int>(wear_r * brightness);
+                        int sg = static_cast<int>(wear_g * brightness);
+                        int sb = static_cast<int>(wear_b * brightness);
+                        
+                        if (!grounded)
+                        {
+                            // dim when airborne
+                            sr = sr / 2;
+                            sg = sg / 2;
+                            sb = sb / 2;
+                        }
+                        
+                        ImVec2 strip_tl(tl.x, tl.y + s * strip_h);
+                        ImVec2 strip_br(br.x, tl.y + (s + 1) * strip_h);
+                        float rounding = (s == 0 || s == strips - 1) ? 8.0f : 0.0f;
+                        int round_flags = (s == 0) ? ImDrawFlags_RoundCornersTop : ((s == strips - 1) ? ImDrawFlags_RoundCornersBottom : 0);
+                        draw_list->AddRectFilled(strip_tl, strip_br, IM_COL32(sr, sg, sb, 255), rounding, round_flags);
+                    }
+                    
+                    // border
+                    ImU32 border_color = grounded ? IM_COL32(160, 160, 160, 255) : IM_COL32(100, 60, 60, 255);
+                    draw_list->AddRect(tl, br, border_color, 8.0f, 0, 2.0f);
+                    
+                    // wear percentage overlay in the tire center
+                    char wear_text[8];
+                    snprintf(wear_text, sizeof(wear_text), "%.0f%%", wear * 100.0f);
+                    ImVec2 wear_size = ImGui::CalcTextSize(wear_text);
+                    ImVec2 wear_pos(center.x - wear_size.x * 0.5f, center.y - wear_size.y * 0.5f - 12);
+                    draw_list->AddText(wear_pos, IM_COL32(255, 255, 255, 220), wear_text);
+
+                    // force arrows over the tire
                     float lat_f = physics->GetWheelLateralForce(wheel);
                     float lon_f = physics->GetWheelLongitudinalForce(wheel);
                     float lat_arrow = std::clamp(lat_f * force_scale, -max_arrow, max_arrow);
@@ -2122,44 +2222,65 @@ namespace spartan
                 draw_legend_item(color_slip_ratio, "slip ratio - wheel spin vs vehicle speed");
             }
 
+            // tire pressure
+            if (ImGui::CollapsingHeader("Tire Pressure", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                float psi     = physics->GetTirePressure();
+                float psi_opt = physics->GetTirePressureOptimal();
+                float delta   = psi - psi_opt;
+                ImVec4 psi_col = (fabsf(delta) < 0.1f) ? ImVec4(0.2f, 1, 0.2f, 1) :
+                                 (fabsf(delta) < 0.3f) ? ImVec4(1, 0.8f, 0.2f, 1) :
+                                                          ImVec4(1, 0.3f, 0.3f, 1);
+                ImGui::TextColored(psi_col, "%.2f bar", psi);
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1), "(optimal %.2f)", psi_opt);
+            }
+
             // temperature table
             if (ImGui::CollapsingHeader("Temperature", ImGuiTreeNodeFlags_DefaultOpen))
             {
-                if (ImGui::BeginTable("temps", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
+                auto temp_color = [](float t) -> ImVec4
+                {
+                    if (t > 110) return ImVec4(1, 0.5f, 0, 1);
+                    if (t < 70)  return ImVec4(0.5f, 0.5f, 1, 1);
+                    return ImVec4(0.2f, 1, 0.2f, 1);
+                };
+
+                if (ImGui::BeginTable("temps", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp))
                 {
                     ImGui::TableSetupColumn("Wheel");
-                    ImGui::TableSetupColumn("Tire C");
+                    ImGui::TableSetupColumn("In");
+                    ImGui::TableSetupColumn("Mid");
+                    ImGui::TableSetupColumn("Out");
+                    ImGui::TableSetupColumn("Core");
                     ImGui::TableSetupColumn("Grip %");
-                    ImGui::TableSetupColumn("Brake C");
-                    ImGui::TableSetupColumn("Brake Eff %");
+                    ImGui::TableSetupColumn("Brake");
                     ImGui::TableHeadersRow();
 
                     for (int i = 0; i < 4; i++)
                     {
                         WheelIndex wheel = static_cast<WheelIndex>(i);
-                        float tire_temp  = physics->GetWheelTemperature(wheel);
-                        float grip       = physics->GetWheelTempGripFactor(wheel);
-                        float brake_temp = physics->GetWheelBrakeTemp(wheel);
-                        float brake_eff  = physics->GetWheelBrakeEfficiency(wheel);
+                        float s_in   = physics->GetWheelSurfaceTemp(wheel, 0);
+                        float s_mid  = physics->GetWheelSurfaceTemp(wheel, 1);
+                        float s_out  = physics->GetWheelSurfaceTemp(wheel, 2);
+                        float core   = physics->GetWheelCoreTemp(wheel);
+                        float grip   = physics->GetWheelTempGripFactor(wheel);
+                        float brake  = physics->GetWheelBrakeTemp(wheel);
 
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn(); ImGui::Text("%s", wheel_names[i]);
-                        ImGui::TableNextColumn();
-                        {
-                            ImVec4 col = (tire_temp > 110) ? ImVec4(1, 0.5f, 0, 1) :
-                                         (tire_temp < 70)  ? ImVec4(0.5f, 0.5f, 1, 1) :
-                                         ImVec4(0.2f, 1, 0.2f, 1);
-                            ImGui::TextColored(col, "%.0f", tire_temp);
-                        }
+                        ImGui::TableNextColumn(); ImGui::TextColored(temp_color(s_in),  "%.0f", s_in);
+                        ImGui::TableNextColumn(); ImGui::TextColored(temp_color(s_mid), "%.0f", s_mid);
+                        ImGui::TableNextColumn(); ImGui::TextColored(temp_color(s_out), "%.0f", s_out);
+                        ImGui::TableNextColumn(); ImGui::TextColored(temp_color(core),  "%.0f", core);
                         ImGui::TableNextColumn(); ImGui::Text("%.0f", grip * 100.0f);
                         ImGui::TableNextColumn();
                         {
-                            ImVec4 col = (brake_temp > 700) ? ImVec4(1, 0, 0, 1) :
-                                         (brake_temp > 400) ? ImVec4(1, 0.5f, 0, 1) :
+                            ImVec4 col = (brake > 700) ? ImVec4(1, 0, 0, 1) :
+                                         (brake > 400) ? ImVec4(1, 0.5f, 0, 1) :
                                          ImVec4(0.8f, 0.8f, 0.8f, 1);
-                            ImGui::TextColored(col, "%.0f", brake_temp);
+                            ImGui::TextColored(col, "%.0f", brake);
                         }
-                        ImGui::TableNextColumn(); ImGui::Text("%.0f", brake_eff * 100.0f);
                     }
                     ImGui::EndTable();
                 }

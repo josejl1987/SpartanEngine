@@ -1525,7 +1525,7 @@ namespace spartan
         // nrd input textures (viewz, normal_roughness, radiance) are already in GENERAL from Renderer_Passes.cpp
         {
             set<void*> transitioned_images;
-            vector<VkImageMemoryBarrier> pre_barriers;
+            vector<VkImageMemoryBarrier2> pre_barriers;
 
             for (uint32_t dispatch_idx = 0; dispatch_idx < dispatch_count; dispatch_idx++)
             {
@@ -1559,10 +1559,12 @@ namespace spartan
                         old_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                     }
 
-                    VkImageMemoryBarrier barrier = {};
-                    barrier.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                    barrier.srcAccessMask                   = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-                    barrier.dstAccessMask                   = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                    VkImageMemoryBarrier2 barrier            = {};
+                    barrier.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                    barrier.srcStageMask                    = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                    barrier.srcAccessMask                   = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+                    barrier.dstStageMask                    = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                    barrier.dstAccessMask                   = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
                     barrier.oldLayout                       = old_layout;
                     barrier.newLayout                       = VK_IMAGE_LAYOUT_GENERAL;
                     barrier.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
@@ -1580,10 +1582,12 @@ namespace spartan
 
             if (!pre_barriers.empty())
             {
-                vkCmdPipelineBarrier(vk_cmd,
-                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    0, 0, nullptr, 0, nullptr,
-                    static_cast<uint32_t>(pre_barriers.size()), pre_barriers.data());
+                VkDependencyInfo dependency_info         = {};
+                dependency_info.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dependency_info.imageMemoryBarrierCount  = static_cast<uint32_t>(pre_barriers.size());
+                dependency_info.pImageMemoryBarriers     = pre_barriers.data();
+
+                vkCmdPipelineBarrier2(vk_cmd, &dependency_info);
             }
         }
 
@@ -1611,7 +1615,7 @@ namespace spartan
 
             // transition all resources to GENERAL layout (compatible with both sampled and storage access)
             // use memory barriers for coherency between dispatches
-            vector<VkImageMemoryBarrier> image_barriers;
+            vector<VkImageMemoryBarrier2> image_barriers;
             for (uint32_t r = 0; r < dispatch.resourcesNum; r++)
             {
                 const nrd::ResourceDesc& res = dispatch.resources[r];
@@ -1620,10 +1624,12 @@ namespace spartan
                 if (!texture)
                     continue;
 
-                VkImageMemoryBarrier barrier = {};
-                barrier.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                barrier.srcAccessMask                   = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-                barrier.dstAccessMask                   = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                VkImageMemoryBarrier2 barrier            = {};
+                barrier.sType                           = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                barrier.srcStageMask                    = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                barrier.srcAccessMask                   = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+                barrier.dstStageMask                    = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                barrier.dstAccessMask                   = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
                 barrier.oldLayout                       = VK_IMAGE_LAYOUT_GENERAL;
                 barrier.newLayout                       = VK_IMAGE_LAYOUT_GENERAL;
                 barrier.srcQueueFamilyIndex             = VK_QUEUE_FAMILY_IGNORED;
@@ -1640,8 +1646,12 @@ namespace spartan
 
             if (!image_barriers.empty())
             {
-                vkCmdPipelineBarrier(vk_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    0, 0, nullptr, 0, nullptr, static_cast<uint32_t>(image_barriers.size()), image_barriers.data());
+                VkDependencyInfo dependency_info         = {};
+                dependency_info.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dependency_info.imageMemoryBarrierCount  = static_cast<uint32_t>(image_barriers.size());
+                dependency_info.pImageMemoryBarriers     = image_barriers.data();
+
+                vkCmdPipelineBarrier2(vk_cmd, &dependency_info);
             }
 
             // build descriptor writes
@@ -1724,11 +1734,19 @@ namespace spartan
             vkCmdDispatch(vk_cmd, dispatch.gridWidth, dispatch.gridHeight, 1);
 
             // memory barrier between dispatches
-            VkMemoryBarrier barrier = {};
-            barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-            vkCmdPipelineBarrier(vk_cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+            VkMemoryBarrier2 memory_barrier = {};
+            memory_barrier.sType            = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+            memory_barrier.srcStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            memory_barrier.srcAccessMask    = VK_ACCESS_2_SHADER_WRITE_BIT;
+            memory_barrier.dstStageMask     = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            memory_barrier.dstAccessMask    = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+
+            VkDependencyInfo dependency_info   = {};
+            dependency_info.sType              = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dependency_info.memoryBarrierCount = 1;
+            dependency_info.pMemoryBarriers    = &memory_barrier;
+
+            vkCmdPipelineBarrier2(vk_cmd, &dependency_info);
         }
 
         // combine denoised diffuse + specular and copy to output

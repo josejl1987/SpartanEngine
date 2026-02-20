@@ -90,8 +90,11 @@ void main_cs(uint3 dispatch_thread_id : SV_DispatchThreadID)
         // hi-z occlusion test
         if (is_visible)
         {
-            float2 min_uv = saturate(ndc_to_uv(min_ndc));
-            float2 max_uv = saturate(ndc_to_uv(max_ndc));
+            // ndc_to_uv flips y, so recompute proper min/max in uv space
+            float2 uv_a   = saturate(ndc_to_uv(min_ndc));
+            float2 uv_b   = saturate(ndc_to_uv(max_ndc));
+            float2 min_uv = min(uv_a, uv_b);
+            float2 max_uv = max(uv_a, uv_b);
 
             float2 render_size;
             tex.GetDimensions(render_size.x, render_size.y);
@@ -130,8 +133,8 @@ void main_cs(uint3 dispatch_thread_id : SV_DispatchThreadID)
 
             // visibility test (reverse z: closer objects have larger z)
             // conservative bias prevents objects at the exact occlusion boundary from flickering
-            // due to per-frame floating point variations in the hi-z depth
-            is_visible = closest_box_z > furthest_z - 0.0001;
+            // due to per-frame variations in hi-z depth, especially for moving objects and occluders
+            is_visible = closest_box_z > furthest_z - 0.001;
         }
     }
 

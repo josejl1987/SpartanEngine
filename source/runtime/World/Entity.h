@@ -178,7 +178,14 @@ namespace spartan
 
         // prefab support - if set, this entity saves as a prefab reference instead of its children
         void SetPrefabData(const std::string& type, const std::unordered_map<std::string, std::string>& attributes);
-        bool HasPrefabData() const { return !m_prefab_type.empty(); }
+        bool HasPrefabData() const                                                             { return !m_prefab_type.empty() || !m_prefab_file_path.empty(); }
+        const std::string& GetPrefabType() const                                               { return m_prefab_type; }
+        const std::string& GetPrefabFilePath() const                                           { return m_prefab_file_path; }
+        const std::unordered_map<std::string, std::string>& GetPrefabAttributes() const        { return m_prefab_attributes; }
+        bool IsCodePrefab() const                                                              { return !m_prefab_type.empty(); }
+        bool IsFilePrefab() const                                                              { return !m_prefab_file_path.empty(); }
+        void SetPrefabFilePath(const std::string& path);
+        void ClearPrefabData();
 
         // transient entities are not serialized (e.g. dynamically created entities like flashlights)
         void SetTransient(bool transient)  { m_transient = transient; }
@@ -219,6 +226,7 @@ namespace spartan
 
         // prefab data (if this entity was created from a prefab)
         std::string m_prefab_type;
+        std::string m_prefab_file_path;
         std::unordered_map<std::string, std::string> m_prefab_attributes;
     };
 }

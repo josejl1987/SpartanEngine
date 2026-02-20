@@ -27,6 +27,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "Properties.h"
 #include "RHI/RHI_Device.h"
 #include "Rendering/Renderer.h"
+#include "World/Prefab.h"
 #include "../ImGui/ImGui_Extension.h"
 #include "../ImGui/ImGui_TransformGizmo.h"
 #include "Settings.h"
@@ -101,6 +102,26 @@ void Viewport::OnTickVisible()
     if (auto payload = ImGuiSp::receive_drag_drop_payload(ImGuiSp::DragPayloadType::Model))
     {
         m_editor->GetWidget<AssetBrowser>()->ShowMeshImportDialog(get<const char*>(payload->data));
+    }
+
+    // handle prefab drop
+    if (auto payload = ImGuiSp::receive_drag_drop_payload(ImGuiSp::DragPayloadType::Prefab))
+    {
+        const char* file_path = get<const char*>(payload->data);
+        if (file_path)
+        {
+            Entity* entity = World::CreateEntity();
+            string name = FileSystem::GetFileNameWithoutExtensionFromFilePath(file_path);
+            entity->SetObjectName(name);
+            if (Prefab::LoadFromFile(file_path, entity))
+            {
+                entity->SetPrefabFilePath(file_path);
+            }
+            else
+            {
+                World::RemoveEntity(entity);
+            }
+        }
     }
 
     Camera* camera = World::GetCamera();

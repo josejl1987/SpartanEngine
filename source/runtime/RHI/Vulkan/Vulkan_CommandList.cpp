@@ -574,6 +574,10 @@ namespace spartan
             if (m_timestamp_index != 0)
             {
                 queries::timestamp::update(m_rhi_query_pool_timestamps);
+
+                // store per-command-list copy so other queues don't overwrite our results
+                m_timestamp_data = queries::timestamp::data;
+                m_gpu_frame_reference_tick = m_timestamp_data[0];
             }
     
             // queries need to be reset before they are first used and they
@@ -584,26 +588,30 @@ namespace spartan
         }
     }
 
-    void RHI_CommandList::Submit(RHI_SyncPrimitive* semaphore_wait, const bool is_immediate, RHI_SyncPrimitive* semaphore_signal /*= nullptr*/)
+    void RHI_CommandList::Submit(RHI_SyncPrimitive* semaphore_wait, const bool is_immediate, RHI_SyncPrimitive* semaphore_signal /*= nullptr*/,
+                                RHI_SyncPrimitive* semaphore_timeline_wait /*= nullptr*/, uint64_t timeline_wait_value /*= 0*/)
     {
         SP_ASSERT(m_state == RHI_CommandListState::Recording);
 
-        // end
+        // end recording: flush any pending layout transitions, then close the command buffer
         RenderPassEnd();
+        FlushBarriers();
         SP_ASSERT_VK(vkEndCommandBuffer(static_cast<VkCommandBuffer>(m_rhi_resource)));
 
-        // determine which binary semaphore to signal:
-        // - if external semaphore provided (e.g. per-swapchain-image), use that
-        // - if immediate mode, no binary semaphore (timeline only)
-        // - otherwise use the command list's binary semaphore
-        RHI_SyncPrimitive* semaphore_binary = semaphore_signal ? semaphore_signal : (is_immediate ? nullptr : m_rendering_complete_semaphore.get());
+        // only signal a binary semaphore when explicitly provided (e.g. swapchain present).
+        // the cmd list's own binary semaphore is not auto-signaled because with multi-submit
+        // per frame (async compute overlap), intermediate submits would signal it repeatedly
+        // without a corresponding wait, violating the vulkan spec for binary semaphores.
+        RHI_SyncPrimitive* semaphore_binary = semaphore_signal;
 
         m_queue->Submit(
-            static_cast<VkCommandBuffer>(m_rhi_resource), // cmd buffer
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,            // wait flags
-            semaphore_wait,                               // wait semaphore
-            semaphore_binary,                             // signal semaphore
-            m_rendering_complete_semaphore_timeline.get() // signal semaphore
+            static_cast<VkCommandBuffer>(m_rhi_resource),
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            semaphore_wait,                               // wait semaphore (binary)
+            semaphore_binary,                             // signal semaphore (binary)
+            m_rendering_complete_semaphore_timeline.get(), // signal semaphore (timeline)
+            semaphore_timeline_wait,                      // wait semaphore (timeline, for cross-queue sync)
+            timeline_wait_value                           // value to wait on
         );
 
         if (semaphore_wait)
@@ -687,10 +695,18 @@ namespace spartan
             // set some dynamic states
             if (m_pso.IsGraphics())
             {
-                // cull mode
+                // binding a new pipeline invalidates all dynamic state, so reset the
+                // cached cull mode to ensure the next SetCullMode call always executes
+                m_cull_mode = RHI_CullMode::Max;
+
+                // cull mode - must be set after every pipeline bind since dynamic state is invalidated
                 if (m_pso.rasterizer_state->GetPolygonMode() == RHI_PolygonMode::Wireframe)
                 {
                     SetCullMode(RHI_CullMode::None);
+                }
+                else
+                {
+                    SetCullMode(RHI_CullMode::Back);
                 }
 
                 // scissor rectangle
@@ -1827,14 +1843,50 @@ namespace spartan
 
     float RHI_CommandList::GetTimestampResult(const uint32_t index_timestamp)
     {
-        SP_ASSERT_MSG(index_timestamp + 1 < queries::timestamp::data.size(), "index out of range");
+        SP_ASSERT_MSG(index_timestamp + 1 < m_timestamp_data.size(), "index out of range");
 
-        uint64_t start    = queries::timestamp::data[index_timestamp];
-        uint64_t end      = queries::timestamp::data[index_timestamp + 1];
-        uint64_t duration = clamp<uint64_t>(end - start, 0, numeric_limits<uint64_t>::max());
+        uint64_t start = m_timestamp_data[index_timestamp];
+        uint64_t end   = m_timestamp_data[index_timestamp + 1];
+
+        // guard against unsigned underflow (stale or not-yet-ready query data)
+        if (end <= start)
+            return 0.0f;
+
+        uint64_t duration = end - start;
         float duration_ms = static_cast<float>(duration * RHI_Device::PropertyGetTimestampPeriod() * 1e-6f);
 
-        return clamp(duration_ms, 0.0f, numeric_limits<float>::max());
+        return clamp(duration_ms, 0.0f, 1000.0f);
+    }
+
+    float RHI_CommandList::GetTimestampStartMs(const uint32_t index_timestamp)
+    {
+        SP_ASSERT_MSG(index_timestamp < m_timestamp_data.size(), "index out of range");
+
+        uint64_t start_tick = m_timestamp_data[index_timestamp];
+        uint64_t ref_tick   = m_gpu_frame_reference_tick;
+
+        // offset from frame reference in ms
+        if (start_tick >= ref_tick)
+        {
+            float offset_ms = static_cast<float>((start_tick - ref_tick) * RHI_Device::PropertyGetTimestampPeriod() * 1e-6f);
+            return clamp(offset_ms, 0.0f, numeric_limits<float>::max());
+        }
+
+        return 0.0f;
+    }
+
+    void RHI_CommandList::ReadbackTimestampsForProfiler()
+    {
+        // wait for gpu to finish executing this command list
+        if (m_state == RHI_CommandListState::Submitted)
+        {
+            WaitForExecution();
+        }
+
+        // read fresh results from the query pool into m_timestamp_data
+        queries::timestamp::update(m_rhi_query_pool_timestamps);
+        m_timestamp_data          = queries::timestamp::data;
+        m_gpu_frame_reference_tick = m_timestamp_data[0];
     }
 
     void RHI_CommandList::BeginOcclusionQuery(const uint64_t entity_id)
@@ -1897,11 +1949,12 @@ namespace spartan
     {
         SP_ASSERT(name != nullptr);
     
-        // timing
-        Profiler::TimeBlockStart(name, TimeBlockType::Cpu, this);
+        // timing - pass the queue type so the profiler knows which lane this block belongs to
+        RHI_Queue_Type queue_type = m_queue ? m_queue->GetType() : RHI_Queue_Type::Max;
+        Profiler::TimeBlockStart(name, TimeBlockType::Cpu, this, queue_type);
         if (Debugging::IsGpuTimingEnabled() && gpu_timing)
         {
-            Profiler::TimeBlockStart(name, TimeBlockType::Gpu, this);
+            Profiler::TimeBlockStart(name, TimeBlockType::Gpu, this, queue_type);
         }
     
         // markers (support nesting)
@@ -1943,19 +1996,17 @@ namespace spartan
         SP_ASSERT(size);
         SP_ASSERT(data);
         SP_ASSERT(offset + size <= buffer->GetObjectSize());
+        SP_ASSERT(offset % 4 == 0);
+        SP_ASSERT(size % 4 == 0);
 
-        // check for vkCmdUpdateBuffer compliance
-        bool synchronized_update  = true;
-        synchronized_update      &= (offset % 4 == 0);                    // offset must be a multiple of 4
-        synchronized_update      &= (size % 4 == 0);                      // size must be a multiple of 4
-        synchronized_update      &= (size <= rhi_max_buffer_update_size); // size must not exceed 65536 bytes
+        // end any active render pass before updating the buffer
+        RenderPassEnd();
 
-        if (synchronized_update)
+        VkCommandBuffer vk_cmd_buffer = static_cast<VkCommandBuffer>(m_rhi_resource);
+        VkBuffer vk_buffer            = static_cast<VkBuffer>(buffer->GetRhiResource());
+
+        // pre-barrier: ensure prior reads from the previous frame complete before we write
         {
-            // end any active render pass before updating the buffer
-            RenderPassEnd();
-        
-            // first barrier: ensure prior reads complete before the write
             VkBufferMemoryBarrier2 barrier_before = {};
             barrier_before.sType                  = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
             barrier_before.srcStageMask           = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -1964,29 +2015,39 @@ namespace spartan
             barrier_before.dstAccessMask          = VK_ACCESS_2_TRANSFER_WRITE_BIT;
             barrier_before.srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
             barrier_before.dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
-            barrier_before.buffer                 = static_cast<VkBuffer>(buffer->GetRhiResource());
+            barrier_before.buffer                 = vk_buffer;
             barrier_before.offset                 = offset;
             barrier_before.size                   = size;
-        
-            VkDependencyInfo dependency_info_before = {};
-            dependency_info_before.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dependency_info_before.bufferMemoryBarrierCount = 1;
-            dependency_info_before.pBufferMemoryBarriers    = &barrier_before;
-        
-            vkCmdPipelineBarrier2(static_cast<VkCommandBuffer>(m_rhi_resource), &dependency_info_before);
+
+            VkDependencyInfo dependency_info = {};
+            dependency_info.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dependency_info.bufferMemoryBarrierCount = 1;
+            dependency_info.pBufferMemoryBarriers    = &barrier_before;
+
+            vkCmdPipelineBarrier2(vk_cmd_buffer, &dependency_info);
             Profiler::m_rhi_pipeline_barriers++;
-        
-            // update the buffer
-            vkCmdUpdateBuffer
-            (
-                static_cast<VkCommandBuffer>(m_rhi_resource),
-                static_cast<VkBuffer>(buffer->GetRhiResource()),
-                offset,
-                size,
-                data
-            );
-        
-            // second barrier: ensure the write completes before all subsequent stages
+        }
+
+        // update: vkCmdUpdateBuffer is limited to 65536 bytes per call, so chunk large updates
+        {
+            const uint8_t* src        = static_cast<const uint8_t*>(data);
+            uint64_t bytes_remaining  = size;
+            uint64_t current_offset   = offset;
+
+            while (bytes_remaining > 0)
+            {
+                uint64_t chunk_size = (bytes_remaining > rhi_max_buffer_update_size) ? rhi_max_buffer_update_size : bytes_remaining;
+
+                vkCmdUpdateBuffer(vk_cmd_buffer, vk_buffer, current_offset, chunk_size, src);
+
+                src             += chunk_size;
+                current_offset  += chunk_size;
+                bytes_remaining -= chunk_size;
+            }
+        }
+
+        // post-barrier: ensure the write completes before subsequent reads
+        {
             VkBufferMemoryBarrier2 barrier_after = {};
             barrier_after.sType                  = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
             barrier_after.srcStageMask           = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
@@ -1995,11 +2056,10 @@ namespace spartan
             barrier_after.dstAccessMask          = 0;
             barrier_after.srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
             barrier_after.dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
-            barrier_after.buffer                 = static_cast<VkBuffer>(buffer->GetRhiResource());
+            barrier_after.buffer                 = vk_buffer;
             barrier_after.offset                 = offset;
             barrier_after.size                   = size;
-        
-            // adjust dstAccessMask for subsequent accesses based on buffer type
+
             switch (buffer->GetType())
             {
                 case RHI_Buffer_Type::Vertex:
@@ -2022,19 +2082,14 @@ namespace spartan
                     SP_ASSERT_MSG(false, "Unknown buffer type");
                     break;
             }
-        
-            VkDependencyInfo dependency_info_after          = {};
-            dependency_info_after.sType                     = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dependency_info_after.bufferMemoryBarrierCount  = 1;
-            dependency_info_after.pBufferMemoryBarriers     = &barrier_after;
-        
-            vkCmdPipelineBarrier2(static_cast<VkCommandBuffer>(m_rhi_resource), &dependency_info_after);
+
+            VkDependencyInfo dependency_info = {};
+            dependency_info.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dependency_info.bufferMemoryBarrierCount = 1;
+            dependency_info.pBufferMemoryBarriers    = &barrier_after;
+
+            vkCmdPipelineBarrier2(vk_cmd_buffer, &dependency_info);
             Profiler::m_rhi_pipeline_barriers++;
-        }
-        else // big bindless arrays (updating these is up to the renderer)
-        {
-            void* mapped_data = static_cast<char*>(buffer->GetMappedData()) + offset;
-            memcpy(mapped_data, data, size);
         }
     }
 
@@ -2145,6 +2200,31 @@ namespace spartan
                         }
                         barrier_helpers::set_layout(image, mip_index, mip_range, barrier.layout);
                         return;
+                    }
+                }
+
+                // compute queues only support a subset of pipeline stages; filter out graphics-only stages
+                if (m_queue->GetType() == RHI_Queue_Type::Compute)
+                {
+                    auto sanitize = [](VkPipelineStageFlags2 stages) -> VkPipelineStageFlags2
+                    {
+                        const VkPipelineStageFlags2 compute_valid =
+                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT    |
+                            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT |
+                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                            VK_PIPELINE_STAGE_2_TRANSFER_BIT       |
+                            VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT   |
+                            VK_PIPELINE_STAGE_2_HOST_BIT           |
+                            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
+                        VkPipelineStageFlags2 filtered = stages & compute_valid;
+                        return filtered ? filtered : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                    };
+
+                    for (auto& b : vk_barriers)
+                    {
+                        b.srcStageMask = sanitize(b.srcStageMask);
+                        b.dstStageMask = sanitize(b.dstStageMask);
                     }
                 }
 
@@ -2377,6 +2457,36 @@ namespace spartan
                     buffer_barriers.push_back(vk_barrier);
                     break;
                 }
+            }
+        }
+
+        // compute queues only support a subset of pipeline stages; filter out graphics-only stages
+        if (m_queue->GetType() == RHI_Queue_Type::Compute)
+        {
+            auto sanitize = [](VkPipelineStageFlags2 stages) -> VkPipelineStageFlags2
+            {
+                const VkPipelineStageFlags2 compute_valid =
+                    VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT        |
+                    VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT     |
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT     |
+                    VK_PIPELINE_STAGE_2_TRANSFER_BIT           |
+                    VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT       |
+                    VK_PIPELINE_STAGE_2_HOST_BIT               |
+                    VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+
+                VkPipelineStageFlags2 filtered = stages & compute_valid;
+                return filtered ? filtered : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            };
+
+            for (auto& b : image_barriers)
+            {
+                b.srcStageMask = sanitize(b.srcStageMask);
+                b.dstStageMask = sanitize(b.dstStageMask);
+            }
+            for (auto& b : buffer_barriers)
+            {
+                b.srcStageMask = sanitize(b.srcStageMask);
+                b.dstStageMask = sanitize(b.dstStageMask);
             }
         }
 

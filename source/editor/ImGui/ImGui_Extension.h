@@ -48,6 +48,7 @@ namespace ImGuiSp
         "Audio",
         "Material",
         "Lua",
+        "Prefab",
         "Undefined",
     };
 
@@ -59,6 +60,7 @@ namespace ImGuiSp
         Audio,
         Material,
         Lua,
+        Prefab,
         Undefined
     };
 

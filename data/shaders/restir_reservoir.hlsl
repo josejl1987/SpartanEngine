@@ -23,33 +23,33 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define SPARTAN_RESTIR_RESERVOIR
 
 // core parameters
-static const uint RESTIR_MAX_PATH_LENGTH     = 3;
-static const uint RESTIR_M_CAP               = 32;
-static const uint RESTIR_SPATIAL_SAMPLES     = 8;
-static const float RESTIR_SPATIAL_RADIUS     = 16.0f;
+static const uint RESTIR_MAX_PATH_LENGTH     = 5;
+static const uint RESTIR_M_CAP               = 128;
+static const uint RESTIR_SPATIAL_SAMPLES     = 16;
+static const float RESTIR_SPATIAL_RADIUS     = 32.0f;
 static const float RESTIR_DEPTH_THRESHOLD    = 0.05f;
-static const float RESTIR_NORMAL_THRESHOLD   = 0.9f;
-static const float RESTIR_TEMPORAL_DECAY     = 0.9f;
+static const float RESTIR_NORMAL_THRESHOLD   = 0.75f;
+static const float RESTIR_TEMPORAL_DECAY     = 0.95f;
 static const float RESTIR_RAY_NORMAL_OFFSET  = 0.05f;
 static const float RESTIR_RAY_T_MIN          = 0.01f;
 
 // sky/environment
 static const float RESTIR_SKY_RADIANCE_CLAMP = 5.0f;
-static const float RESTIR_SKY_W_CLAMP        = 1.5f;
+static const float RESTIR_SKY_W_CLAMP        = 15.0f;
 static const float RESTIR_SKY_DIR_THRESHOLD  = 0.95f;
 static const float RESTIR_ENV_SAMPLE_PROB    = 0.3f;
 static const float RESTIR_SKY_DISTANCE       = 1e10f;
 
 // visibility/geometry
 static const float RESTIR_VIS_COS_FRONT      = 0.1f;
-static const float RESTIR_VIS_COS_BACK       = 0.15f;
+static const float RESTIR_VIS_COS_BACK       = 0.05f;
 static const float RESTIR_VIS_MIN_DIST       = 0.02f;
 static const float RESTIR_VIS_PLANE_MIN      = 0.001f;
 
 // BRDF thresholds
 static const float RESTIR_MIN_ROUGHNESS      = 0.04f;
 static const float RESTIR_MIN_PDF            = 1e-6f;
-static const float RESTIR_W_CLAMP_DEFAULT    = 1.5f;
+static const float RESTIR_W_CLAMP_DEFAULT    = 50.0f;
 static const float RESTIR_SPECULAR_THRESHOLD = 0.2f;
 
 // firefly suppression
@@ -192,9 +192,7 @@ Reservoir create_empty_reservoir()
 float calculate_target_pdf(float3 radiance)
 {
     float lum = dot(radiance, float3(0.299, 0.587, 0.114));
-    lum = clamp(lum, 0.0f, 65504.0f);
-    float compressed = log(1.0f + lum) / (1.0f + log(1.0f + lum) * 0.5f);
-    return max(compressed, 1e-6f);
+    return max(lum, 1e-6f);
 }
 
 float calculate_target_pdf_with_brdf(float3 radiance, float3 sample_dir, float3 shading_normal, float3 view_dir,
@@ -495,13 +493,13 @@ float compute_jacobian(float3 sample_pos, float3 original_shading_pos, float3 ne
     dir_new      /= dist_new;
 
     float cos_at_receiver = dot(new_receiver_normal, dir_new);
-    if (cos_at_receiver < 0.2f)
+    if (cos_at_receiver < 0.05f)
         return 0.0f;
 
     float cos_original = dot(sample_normal, -dir_original);
     float cos_new      = dot(sample_normal, -dir_new);
 
-    static const float MIN_COS_ANGLE = 0.15f;
+    static const float MIN_COS_ANGLE = 0.05f;
     if (cos_original < MIN_COS_ANGLE || cos_new < MIN_COS_ANGLE)
         return 0.0f;
 
@@ -517,12 +515,7 @@ float compute_jacobian(float3 sample_pos, float3 original_shading_pos, float3 ne
 
     float jacobian = (cos_new * dist_original_sq) / max(cos_original * dist_new_sq, 1e-4f);
 
-    float dist_ratio   = dist_original / dist_new;
-    float base_max     = lerp(2.0f, 4.0f, saturate(dist_ratio));
-    float distance_factor = saturate(avg_dist / 100.0f);
-    float max_jacobian = lerp(base_max, min(base_max, 1.5f), distance_factor);
-
-    return clamp(jacobian, 0.0f, max_jacobian);
+    return clamp(jacobian, 0.0f, 10.0f);
 }
 
 float power_heuristic(float pdf_a, float pdf_b)
@@ -575,17 +568,7 @@ float3 soft_clamp_gi(float3 gi, PathSample sample)
 
     float lum = dot(gi, float3(0.299f, 0.587f, 0.114f));
 
-    // soft clamp based on sample type
-    float soft_clamp;
-    if (is_sky_sample(sample))
-    {
-        soft_clamp = 4.0f;
-    }
-    else
-    {
-        float bounce_factor = saturate(float(sample.path_length - 1) / 2.0f);
-        soft_clamp = lerp(3.0f, 1.5f, bounce_factor);
-    }
+    float soft_clamp = is_sky_sample(sample) ? 40.0f : 50.0f;
 
     if (lum > soft_clamp)
     {
@@ -595,7 +578,7 @@ float3 soft_clamp_gi(float3 gi, PathSample sample)
     }
 
     // hard clamp
-    float max_lum = 5.0f;
+    float max_lum = 100.0f;
     float final_lum = dot(gi, float3(0.299f, 0.587f, 0.114f));
     if (final_lum > max_lum)
         gi *= max_lum / final_lum;

@@ -115,7 +115,9 @@ public:
     void SetOperation(FileDialog_Operation operation);
 
     // path
+    const std::string& GetCurrentPath() const { return m_current_path; }
     void SetCurrentPath(const std::string& path);
+    void SetDirty() { m_is_dirty = true; }
 
     // shows the dialog and returns true if a selection was made
     bool Show(bool* is_visible, Editor* editor, std::string* directory = nullptr, std::string* file_path = nullptr);

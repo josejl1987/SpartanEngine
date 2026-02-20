@@ -35,12 +35,14 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "World/Components/Light.h"
 #include "World/Components/AudioSource.h"
 #include "World/Components/Spline.h"
+#include "World/Components/SplineFollower.h"
 #include "World/Components/Terrain.h"
 #include "World/Components/Camera.h"
 #include "World/Components/Volume.h"
 #include "Rendering/Renderer.h"
 #include "World/Components/Script.h"
 #include "World/Components/ParticleSystem.h"
+#include "World/Prefab.h"
 //=======================================
 
 //= NAMESPACES =========
@@ -63,6 +65,11 @@ namespace
     // context menu state
     string context_menu_id;
     Component* copied_component = nullptr;
+
+    // deferred component removal - storing the id prevents a use-after-free
+    // crash when the component is destroyed while its Show* function is still on the stack
+    uint64_t pending_removal_id    = 0;
+    Entity*  pending_removal_owner = nullptr;
 
     // component content tracking
     bool component_content_active = false;
@@ -96,8 +103,9 @@ namespace
         inline ImVec4 accent_audio()      { return ImVec4(0.70f, 0.45f, 0.55f, 1.0f); }
         inline ImVec4 accent_terrain()    { return ImVec4(0.50f, 0.70f, 0.45f, 1.0f); }
         inline ImVec4 accent_volume()     { return ImVec4(0.55f, 0.55f, 0.75f, 1.0f); }
-        inline ImVec4 accent_spline()     { return ImVec4(0.30f, 0.75f, 0.70f, 1.0f); }
-        inline ImVec4 accent_script()     { return ImVec4(0.60f, 0.70f, 0.50f, 1.0f); }
+        inline ImVec4 accent_spline()          { return ImVec4(0.30f, 0.75f, 0.70f, 1.0f); }
+        inline ImVec4 accent_spline_follower() { return ImVec4(0.35f, 0.80f, 0.65f, 1.0f); }
+        inline ImVec4 accent_script()          { return ImVec4(0.60f, 0.70f, 0.50f, 1.0f); }
         inline ImVec4 accent_particles() { return ImVec4(0.90f, 0.55f, 0.30f, 1.0f); }
 
         // helper to get dimmed version for backgrounds
@@ -245,7 +253,10 @@ namespace
                     {
                         if (component)
                         {
-                            entity->RemoveComponentById(component->GetObjectId());
+                            // defer the removal so we don't destroy a component
+                            // while its Show* function is still on the call stack
+                            pending_removal_id    = component->GetObjectId();
+                            pending_removal_owner = entity;
                         }
                     }
                 }
@@ -628,6 +639,7 @@ void Properties::OnTickVisible()
             ShowCamera(entity->GetComponent<Camera>());
             ShowTerrain(entity->GetComponent<Terrain>());
             ShowSpline(entity->GetComponent<Spline>());
+            ShowSplineFollower(entity->GetComponent<SplineFollower>());
             ShowAudioSource(entity->GetComponent<AudioSource>());
 
             // re-fetch after ShowSpline since clearing a road mesh removes the renderable
@@ -640,6 +652,14 @@ void Properties::OnTickVisible()
             ShowParticleSystem(entity->GetComponent<ParticleSystem>());
 
             ShowAddComponentButton();
+
+            // process deferred component removal now that all Show* calls are done
+            if (pending_removal_owner && pending_removal_id != 0)
+            {
+                pending_removal_owner->RemoveComponentById(pending_removal_id);
+                pending_removal_owner = nullptr;
+                pending_removal_id    = 0;
+            }
         }
         else if (!m_inspected_material.expired())
         {
@@ -693,6 +713,81 @@ void Properties::ShowEntity(Entity* entity) const
         ImGui::TextUnformatted(entity->GetObjectName().c_str());
         ImGui::PopFont();
         ImGui::PopStyleColor();
+
+        // prefab indicator
+        if (entity->HasPrefabData())
+        {
+            ImGui::SameLine();
+
+            // badge styling
+            bool is_code = entity->IsCodePrefab();
+            bool is_file = entity->IsFilePrefab();
+            ImVec4 badge_color = is_code ? ImVec4(0.55f, 0.35f, 0.70f, 1.0f) : ImVec4(0.30f, 0.60f, 0.45f, 1.0f);
+
+            ImGui::PushStyleColor(ImGuiCol_Text, badge_color);
+            ImGui::PushFont(Editor::font_bold);
+            ImGui::TextUnformatted(is_code ? "[prefab:code]" : "[prefab:file]");
+            ImGui::PopFont();
+            ImGui::PopStyleColor();
+
+            layout::group_spacing();
+
+            // prefab type (for code prefabs)
+            if (is_code)
+            {
+                property_text("Prefab Type", entity->GetPrefabType(), "registered code prefab type");
+            }
+
+            // prefab file path (for file prefabs)
+            if (is_file)
+            {
+                property_text("Prefab File", entity->GetPrefabFilePath(), "path to the .prefab file");
+            }
+
+            // code prefab attributes (read-only)
+            if (is_code && !entity->GetPrefabAttributes().empty())
+            {
+                layout::separator();
+                layout::section_header("Prefab Attributes");
+
+                for (const auto& [key, value] : entity->GetPrefabAttributes())
+                {
+                    if (key == "type")
+                        continue; // already shown above
+                    property_text(key.c_str(), value, "prefab attribute (read-only)");
+                }
+            }
+
+            // prefab action buttons
+            layout::separator();
+
+            // save prefab (for file prefabs only)
+            if (is_file)
+            {
+                float button_width = ImGui::GetContentRegionAvail().x;
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.50f, 0.35f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.60f, 0.40f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.20f, 0.45f, 0.30f, 1.0f));
+                if (ImGuiSp::button("Save Prefab", ImVec2(button_width, 0)))
+                {
+                    Prefab::SaveToFile(entity, entity->GetPrefabFilePath());
+                }
+                ImGui::PopStyleColor(3);
+            }
+
+            // detach from prefab
+            {
+                float button_width = ImGui::GetContentRegionAvail().x;
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.35f, 0.30f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.65f, 0.40f, 0.35f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.50f, 0.30f, 0.25f, 1.0f));
+                if (ImGuiSp::button("Detach from Prefab", ImVec2(button_width, 0)))
+                {
+                    entity->ClearPrefabData();
+                }
+                ImGui::PopStyleColor(3);
+            }
+        }
 
         layout::group_spacing();
 
@@ -1714,6 +1809,12 @@ void Properties::ShowSpline(spartan::Spline* spline) const
         uint32_t resolution  = spline->GetResolution();
         uint32_t point_count = spline->GetControlPointCount();
         float road_width     = spline->GetRoadWidth();
+        uint32_t profile     = static_cast<uint32_t>(spline->GetProfile());
+        float height         = spline->GetHeight();
+        float thickness      = spline->GetThickness();
+        uint32_t tube_sides  = spline->GetTubeSides();
+        float inst_spacing   = spline->GetInstanceSpacing();
+        bool inst_align      = spline->GetAlignInstancesToSpline();
         //=================================================
 
         layout::section_header("Spline");
@@ -1759,9 +1860,18 @@ void Properties::ShowSpline(spartan::Spline* spline) const
             math::Vector3 position = math::Vector3::Zero;
             if (point_count > 0)
             {
-                if (spartan::Entity* last_child = spline->GetEntity()->GetChildByIndex(point_count - 1))
+                // find the last control point child by walking children in reverse
+                spartan::Entity* parent = spline->GetEntity();
+                for (uint32_t i = parent->GetChildrenCount(); i > 0; i--)
                 {
-                    position = last_child->GetPositionLocal() + math::Vector3(5.0f, 0.0f, 0.0f);
+                    if (spartan::Entity* child = parent->GetChildByIndex(i - 1))
+                    {
+                        if (child->GetObjectName().find("spline_point_") == 0)
+                        {
+                            position = child->GetPositionLocal() + math::Vector3(5.0f, 0.0f, 0.0f);
+                            break;
+                        }
+                    }
                 }
             }
             spline->AddControlPoint(position);
@@ -1777,22 +1887,63 @@ void Properties::ShowSpline(spartan::Spline* spline) const
         ImGui::EndDisabled();
 
         layout::separator();
-        layout::section_header("Road Mesh");
+        layout::section_header("Mesh Generation");
 
-        // road width
-        if (property_float("Width", &road_width, 0.1f, 0.5f, 100.0f, "road width in meters", "%.1f m"))
+        // profile type selector
+        static vector<string> profile_names = { "Road", "Wall", "Tube", "Fence", "Channel" };
+        if (property_combo("Profile", profile_names, &profile, "cross-section shape extruded along the spline"))
+        {
+            spline->SetProfile(static_cast<spartan::SplineProfile>(profile));
+        }
+
+        // width (used by all profiles)
+        if (property_float("Width", &road_width, 0.1f, 0.5f, 100.0f, "width in meters", "%.1f m"))
         {
             spline->SetRoadWidth(road_width);
         }
 
+        // height (used by wall, fence, channel)
+        spartan::SplineProfile current_profile = static_cast<spartan::SplineProfile>(profile);
+        bool needs_height = current_profile == spartan::SplineProfile::Wall ||
+                            current_profile == spartan::SplineProfile::Fence ||
+                            current_profile == spartan::SplineProfile::Channel;
+        if (needs_height)
+        {
+            if (property_float("Height", &height, 0.1f, 0.1f, 100.0f, "height in meters", "%.1f m"))
+            {
+                spline->SetHeight(height);
+            }
+        }
+
+        // thickness (used by wall, fence)
+        bool needs_thickness = current_profile == spartan::SplineProfile::Wall ||
+                               current_profile == spartan::SplineProfile::Fence;
+        if (needs_thickness)
+        {
+            if (property_float("Thickness", &thickness, 0.01f, 0.01f, 10.0f, "thickness in meters", "%.2f m"))
+            {
+                spline->SetThickness(thickness);
+            }
+        }
+
+        // tube sides (only for tube)
+        if (current_profile == spartan::SplineProfile::Tube)
+        {
+            float tube_sides_f = static_cast<float>(tube_sides);
+            if (property_float("Sides", &tube_sides_f, 1.0f, 3.0f, 64.0f, "tube cross-section subdivisions", "%.0f"))
+            {
+                spline->SetTubeSides(static_cast<uint32_t>(tube_sides_f));
+            }
+        }
+
         layout::group_spacing();
 
-        // generate / clear road buttons
-        float road_button_width = 120.0f * spartan::Window::GetDpiScale();
-        ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - road_button_width) * 0.5f + ImGui::GetCursorPosX());
+        // generate / clear mesh buttons
+        float gen_button_width = 120.0f * spartan::Window::GetDpiScale();
+        ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - gen_button_width) * 0.5f + ImGui::GetCursorPosX());
 
         ImGui::BeginDisabled(point_count < 2);
-        if (ImGuiSp::button("Generate Road", ImVec2(road_button_width, 0)))
+        if (ImGuiSp::button("Generate", ImVec2(gen_button_width, 0)))
         {
             spline->GenerateRoadMesh();
         }
@@ -1800,12 +1951,123 @@ void Properties::ShowSpline(spartan::Spline* spline) const
 
         if (spline->HasRoadMesh())
         {
-            ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - road_button_width) * 0.5f + ImGui::GetCursorPosX());
-            if (ImGuiSp::button("Clear Road", ImVec2(road_button_width, 0)))
+            ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - gen_button_width) * 0.5f + ImGui::GetCursorPosX());
+            if (ImGuiSp::button("Clear", ImVec2(gen_button_width, 0)))
             {
                 spline->ClearRoadMesh();
             }
         }
+
+        layout::separator();
+        layout::section_header("Instancing");
+
+        // instance spacing
+        if (property_float("Spacing", &inst_spacing, 0.1f, 0.5f, 100.0f, "distance between instances in meters", "%.1f m"))
+        {
+            spline->SetInstanceSpacing(inst_spacing);
+        }
+
+        // align instances to spline
+        if (property_toggle("Align to Spline", &inst_align, "rotate instances to follow the spline direction"))
+        {
+            spline->SetAlignInstancesToSpline(inst_align);
+        }
+
+        layout::group_spacing();
+
+        // spawn / clear instance buttons
+        float inst_button_width = 120.0f * spartan::Window::GetDpiScale();
+        ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - inst_button_width) * 0.5f + ImGui::GetCursorPosX());
+
+        ImGui::BeginDisabled(point_count < 2);
+        if (ImGuiSp::button("Spawn", ImVec2(inst_button_width, 0)))
+        {
+            spline->SpawnInstances();
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - inst_button_width) * 0.5f + ImGui::GetCursorPosX());
+        if (ImGuiSp::button("Clear Instances", ImVec2(inst_button_width, 0)))
+        {
+            spline->ClearInstances();
+        }
+    }
+    component_end();
+}
+
+void Properties::ShowSplineFollower(spartan::SplineFollower* follower) const
+{
+    if (!follower)
+        return;
+
+    if (component_begin("Spline Follower", design::accent_spline_follower(), follower))
+    {
+        //= REFLECT ========================================
+        float speed         = follower->GetSpeed();
+        uint32_t mode       = static_cast<uint32_t>(follower->GetFollowMode());
+        bool align          = follower->GetAlignToSpline();
+        float progress      = follower->GetProgress();
+        uint64_t spline_id  = follower->GetSplineEntityId();
+        Entity* spline_ent  = follower->GetSplineEntity();
+        //==================================================
+
+        layout::section_header("Spline Reference");
+
+        // build a list of entities that have a spline component
+        const vector<Entity*>& all_entities = World::GetEntities();
+        vector<string> spline_names;
+        vector<uint64_t> spline_ids;
+        uint32_t selected_index = 0;
+
+        // first entry is "none"
+        spline_names.push_back("(none)");
+        spline_ids.push_back(0);
+
+        for (Entity* entity : all_entities)
+        {
+            if (entity && entity->GetComponent<Spline>())
+            {
+                spline_ids.push_back(entity->GetObjectId());
+                spline_names.push_back(entity->GetObjectName());
+
+                if (entity->GetObjectId() == spline_id)
+                {
+                    selected_index = static_cast<uint32_t>(spline_names.size() - 1);
+                }
+            }
+        }
+
+        if (property_combo("Spline", spline_names, &selected_index, "the spline entity to follow"))
+        {
+            follower->SetSplineEntityId(spline_ids[selected_index]);
+        }
+
+        layout::separator();
+        layout::section_header("Movement");
+
+        // speed
+        if (property_float("Speed", &speed, 0.1f, 0.0f, 1000.0f, "movement speed in world units per second", "%.1f"))
+        {
+            follower->SetSpeed(speed);
+        }
+
+        // follow mode
+        static vector<string> mode_names = { "Clamp", "Loop", "Ping Pong" };
+        if (property_combo("Mode", mode_names, &mode, "behavior when reaching the end of the spline"))
+        {
+            follower->SetFollowMode(static_cast<spartan::SplineFollowMode>(mode));
+        }
+
+        // align to spline
+        if (property_toggle("Align To Spline", &align, "orient the entity along the spline tangent"))
+        {
+            follower->SetAlignToSpline(align);
+        }
+
+        // progress (read-only)
+        char progress_buf[32];
+        snprintf(progress_buf, sizeof(progress_buf), "%.1f%%", progress * 100.0f);
+        property_text("Progress", progress_buf, "current position along the spline");
     }
     component_end();
 }
@@ -1998,6 +2260,15 @@ void Properties::ShowVolume(spartan::Volume* volume) const
 
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
+
+        layout::separator();
+        layout::section_header("Audio Reverb");
+
+        bool reverb_enabled = volume->GetReverbEnabled();
+        property_toggle("Enabled", &reverb_enabled, "apply reverb to audio sources inside this volume (derived from volume size)");
+
+        if (reverb_enabled != volume->GetReverbEnabled())
+            volume->SetReverbEnabled(reverb_enabled);
     }
     component_end();
 }
@@ -2154,6 +2425,109 @@ void Properties::ShowAddComponentButton() const
     ImGui::PopStyleVar(2);
 
     ComponentContextMenu_Add();
+
+    // save as prefab button (only for non-prefab entities, or for file prefabs that want to save-as)
+    if (Entity* entity = get_selected_entity())
+    {
+        ImGui::Dummy(ImVec2(0, design::spacing_sm));
+
+        float save_button_width = 160.0f * spartan::Window::GetDpiScale();
+        ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - save_button_width) * 0.5f + ImGui::GetCursorPosX());
+
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(design::spacing_lg, design::spacing_md));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.30f, 0.50f, 0.35f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.35f, 0.60f, 0.40f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.25f, 0.45f, 0.30f, 1.0f));
+
+        if (ImGuiSp::button("Save as Prefab...", ImVec2(save_button_width, 0)))
+        {
+            ImGui::OpenPopup("##SaveAsPrefab");
+        }
+
+        ImGui::PopStyleColor(3);
+        ImGui::PopStyleVar(2);
+
+        // save-as-prefab popup
+        ShowSaveAsPrefabPopup(entity);
+    }
+}
+
+void Properties::ShowSaveAsPrefabPopup(spartan::Entity* entity) const
+{
+    static char prefab_name[256]  = "";
+    static bool needs_init        = true;
+
+    // detect when the popup is about to open (was closed, now opening)
+    bool is_open = ImGui::IsPopupOpen("##SaveAsPrefab");
+    if (is_open && needs_init)
+    {
+        strncpy_s(prefab_name, sizeof(prefab_name), entity->GetObjectName().c_str(), _TRUNCATE);
+        needs_init = false;
+    }
+    else if (!is_open)
+    {
+        needs_init = true;
+    }
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(design::spacing_xl, design::spacing_lg));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(design::spacing_md, design::spacing_md));
+
+    if (ImGui::BeginPopup("##SaveAsPrefab"))
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.85f, 0.85f, 1.0f));
+        ImGui::PushFont(Editor::font_bold);
+        ImGui::TextUnformatted("Save as Prefab");
+        ImGui::PopFont();
+        ImGui::PopStyleColor();
+
+        ImGui::Dummy(ImVec2(0, design::spacing_sm));
+
+        ImGui::TextUnformatted("Name:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(200.0f);
+        ImGui::InputText("##prefab_name_input", prefab_name, sizeof(prefab_name));
+
+        // show the path that will be used
+        string preview_path = string("prefabs/") + prefab_name + ".prefab";
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+        ImGui::Text("file: %s", preview_path.c_str());
+        ImGui::PopStyleColor();
+
+        ImGui::Dummy(ImVec2(0, design::spacing_sm));
+
+        // save button
+        bool name_valid = strlen(prefab_name) > 0;
+        ImGui::BeginDisabled(!name_valid);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.25f, 0.50f, 0.35f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.30f, 0.60f, 0.40f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.20f, 0.45f, 0.30f, 1.0f));
+
+        if (ImGuiSp::button("Save", ImVec2(80.0f, 0)))
+        {
+            string file_path = string(ResourceCache::GetProjectDirectory()) + "/prefabs/" + prefab_name + ".prefab";
+            if (Prefab::SaveToFile(entity, file_path))
+            {
+                // tag the entity as a file prefab so future world saves reference the file
+                entity->SetPrefabFilePath(file_path);
+            }
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::PopStyleColor(3);
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+
+        if (ImGuiSp::button("Cancel", ImVec2(80.0f, 0)))
+        {
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+
+    ImGui::PopStyleVar(2);
 }
 
 void Properties::ComponentContextMenu_Add() const
@@ -2202,6 +2576,11 @@ void Properties::ComponentContextMenu_Add() const
             if (ImGui::MenuItem("Spline"))
             {
                 entity->AddComponent<Spline>();
+            }
+
+            if (ImGui::MenuItem("Spline Follower"))
+            {
+                entity->AddComponent<SplineFollower>();
             }
 
             ImGui::Dummy(ImVec2(0, design::spacing_sm));

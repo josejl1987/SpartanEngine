@@ -23,7 +23,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pch.h"
 #include "AudioSource.h"
 #include "Camera.h"
+#include "Volume.h"
 #include "../Entity.h"
+#include "../World.h"
 SP_WARNINGS_OFF
 #include <SDL3/SDL_audio.h>
 #include "../IO/pugixml.hpp"
@@ -272,6 +274,53 @@ namespace spartan
             }
         }
 
+        // check if inside any volume that has reverb enabled
+        {
+            Vector3 source_position      = GetEntity()->GetPosition();
+            bool found_reverb_volume     = false;
+
+            for (Entity* entity : World::GetEntities())
+            {
+                Volume* volume = entity->GetComponent<Volume>();
+                if (!volume || !volume->GetReverbEnabled())
+                    continue;
+
+                // transform the volume's local bounding box into world space
+                BoundingBox transformed_box = volume->GetBoundingBox() * entity->GetMatrix();
+                if (transformed_box.Contains(source_position))
+                {
+                    // allocate reverb buffers if they haven't been yet
+                    if (m_reverb_buffer_l.empty())
+                    {
+                        m_reverb_buffer_l.assign(reverb_buffer_size, 0.0f);
+                        m_reverb_buffer_r.assign(reverb_buffer_size, 0.0f);
+                        m_reverb_write_pos = 0;
+                    }
+
+                    // derive reverb parameters from the volume's physical size
+                    // larger volumes produce longer, more resonant reverb
+                    Vector3 size       = transformed_box.GetSize();
+                    float longest_axis = max({ size.x, size.y, size.z });
+                    float size_factor  = clamp(longest_axis / 50.0f, 0.0f, 1.0f); // 50m+ = full scale
+
+                    m_reverb_enabled   = true;
+                    m_reverb_room_size = 0.6f + size_factor * 0.4f;               // [0.6, 1.0]
+                    m_reverb_decay     = 0.7f + size_factor * 0.28f;              // [0.7, 0.98]
+                    m_reverb_wet       = 0.6f + size_factor * 0.35f;              // [0.6, 0.95]
+                    found_reverb_volume = true;
+                    break;
+                }
+            }
+
+            // leaving a reverb volume, disable the override
+            if (!found_reverb_volume && m_volume_reverb_active)
+            {
+                m_reverb_enabled = false;
+            }
+
+            m_volume_reverb_active = found_reverb_volume;
+        }
+
         // feed audio based on mode
         if (m_synthesis_mode)
             FeedSynthesizedChunk();
@@ -369,18 +418,20 @@ namespace spartan
             m_stereo_chunk[2 * i + 1] *= right_gain;
         }
 
-        // apply reverb effect if enabled
+        // apply reverb effect using a feedback delay network
+        // 6 taps with long delays for large-space character (tunnels, halls)
         if (m_reverb_enabled && !m_reverb_buffer_l.empty())
         {
-            const uint32_t base_delays[4] = { 1087, 1283, 1511, 1777 };
+            const uint32_t base_delays[6] = { 4799, 6907, 8893, 10007, 11903, 13313 };
             const float room_scale        = 0.3f + m_reverb_room_size * 0.7f;
-            uint32_t delays[4];
-            for (int d = 0; d < 4; ++d)
+            uint32_t delays[6];
+            for (int d = 0; d < 6; ++d)
                 delays[d] = static_cast<uint32_t>(base_delays[d] * room_scale);
 
-            const float feedback = m_reverb_decay * 0.7f;
+            const float tap_gain = 1.0f / 6.0f;
+            const float feedback = m_reverb_decay * 0.85f;
             const float wet      = m_reverb_wet;
-            const float dry      = 1.0f - wet * 0.5f;
+            const float dry      = 1.0f - wet * 0.4f;
 
             for (uint32_t i = 0; i < num_samples; ++i)
             {
@@ -389,12 +440,12 @@ namespace spartan
 
                 float reverb_l = 0.0f;
                 float reverb_r = 0.0f;
-                for (int d = 0; d < 4; ++d)
+                for (int d = 0; d < 6; ++d)
                 {
                     uint32_t read_pos_l = (m_reverb_write_pos + reverb_buffer_size - delays[d]) % reverb_buffer_size;
-                    uint32_t read_pos_r = (m_reverb_write_pos + reverb_buffer_size - delays[d] - 23) % reverb_buffer_size;
-                    reverb_l += m_reverb_buffer_l[read_pos_l] * 0.25f;
-                    reverb_r += m_reverb_buffer_r[read_pos_r] * 0.25f;
+                    uint32_t read_pos_r = (m_reverb_write_pos + reverb_buffer_size - delays[d] - 181) % reverb_buffer_size;
+                    reverb_l += m_reverb_buffer_l[read_pos_l] * tap_gain;
+                    reverb_r += m_reverb_buffer_r[read_pos_r] * tap_gain;
                 }
 
                 m_reverb_buffer_l[m_reverb_write_pos] = dry_l + reverb_l * feedback;
@@ -607,47 +658,43 @@ namespace spartan
         }
 
         // apply reverb effect using a feedback delay network
+        // 6 taps with long delays for large-space character (tunnels, halls)
         if (m_reverb_enabled && !m_reverb_buffer_l.empty())
         {
-            // delay tap offsets scaled by room size (in samples at 48khz)
-            // these prime-number-based delays create a more natural reverb
-            const uint32_t base_delays[4] = { 1087, 1283, 1511, 1777 };
+            const uint32_t base_delays[6] = { 4799, 6907, 8893, 10007, 11903, 13313 };
             const float room_scale        = 0.3f + m_reverb_room_size * 0.7f;
-            uint32_t delays[4];
-            for (int d = 0; d < 4; ++d)
+            uint32_t delays[6];
+            for (int d = 0; d < 6; ++d)
             {
                 delays[d] = static_cast<uint32_t>(base_delays[d] * room_scale);
             }
 
-            const float feedback = m_reverb_decay * 0.7f; // scale feedback for stability
+            const float tap_gain = 1.0f / 6.0f;
+            const float feedback = m_reverb_decay * 0.85f;
             const float wet      = m_reverb_wet;
-            const float dry      = 1.0f - wet * 0.5f; // keep dry signal prominent
+            const float dry      = 1.0f - wet * 0.4f;
 
             for (uint32_t i = 0; i < num_samples; ++i)
             {
                 float dry_l = m_stereo_chunk[2 * i];
                 float dry_r = m_stereo_chunk[2 * i + 1];
 
-                // read from multiple delay taps and sum for diffuse reverb
                 float reverb_l = 0.0f;
                 float reverb_r = 0.0f;
-                for (int d = 0; d < 4; ++d)
+                for (int d = 0; d < 6; ++d)
                 {
                     uint32_t read_pos_l = (m_reverb_write_pos + reverb_buffer_size - delays[d]) % reverb_buffer_size;
-                    uint32_t read_pos_r = (m_reverb_write_pos + reverb_buffer_size - delays[d] - 23) % reverb_buffer_size; // slight offset for stereo width
-                    reverb_l += m_reverb_buffer_l[read_pos_l] * 0.25f;
-                    reverb_r += m_reverb_buffer_r[read_pos_r] * 0.25f;
+                    uint32_t read_pos_r = (m_reverb_write_pos + reverb_buffer_size - delays[d] - 181) % reverb_buffer_size;
+                    reverb_l += m_reverb_buffer_l[read_pos_l] * tap_gain;
+                    reverb_r += m_reverb_buffer_r[read_pos_r] * tap_gain;
                 }
 
-                // write new samples with feedback to the delay buffer
                 m_reverb_buffer_l[m_reverb_write_pos] = dry_l + reverb_l * feedback;
                 m_reverb_buffer_r[m_reverb_write_pos] = dry_r + reverb_r * feedback;
 
-                // mix dry and wet signals
                 m_stereo_chunk[2 * i]     = dry_l * dry + reverb_l * wet;
                 m_stereo_chunk[2 * i + 1] = dry_r * dry + reverb_r * wet;
 
-                // advance write position
                 m_reverb_write_pos = (m_reverb_write_pos + 1) % reverb_buffer_size;
             }
         }

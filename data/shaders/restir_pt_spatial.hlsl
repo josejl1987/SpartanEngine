@@ -24,8 +24,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "restir_reservoir.hlsl"
 //==============================
 
-static const float SPATIAL_RADIUS_MIN  = 4.0f;
-static const float SPATIAL_RADIUS_MAX  = 16.0f;
+static const float SPATIAL_RADIUS_MIN  = 8.0f;
+static const float SPATIAL_RADIUS_MAX  = 32.0f;
 static const float SPATIAL_DEPTH_SCALE = 0.5f;
 
 static const float2 SPATIAL_OFFSETS[16] = {
@@ -50,7 +50,7 @@ bool check_spatial_visibility(float3 center_pos, float3 center_normal, float3 sa
     dir /= dist;
 
     float cos_theta = dot(dir, center_normal);
-    if (cos_theta <= 0.25f)
+    if (cos_theta <= 0.05f)
         return false;
 
     float cos_back = dot(sample_hit_normal, -dir);
@@ -140,7 +140,7 @@ float evaluate_jacobian_for_reuse(PathSample sample, float3 center_pos, float3 c
 
     dir_to_sample = dir_to_sample * rsqrt(dist_sq);
     float cos_theta = dot(center_normal, dir_to_sample);
-    if (cos_theta <= 0.25f)
+    if (cos_theta <= 0.05f)
         return 0.0f;
 
     float jacobian = compute_jacobian(sample.hit_position, neighbor_pos, center_pos, sample.hit_normal, center_normal);
@@ -219,8 +219,20 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
     Reservoir combined = create_empty_reservoir();
 
-    // evaluate center sample - luminance-based target for consistency
-    float target_pdf_center = calculate_target_pdf(center.sample.radiance);
+    float target_pdf_center;
+    if (is_sky_sample(center.sample))
+    {
+        target_pdf_center = calculate_target_pdf_sky(center.sample.radiance,
+            center.sample.direction, normal_ws, view_dir, albedo, roughness, metallic);
+    }
+    else
+    {
+        target_pdf_center = calculate_target_pdf_with_geometry(center.sample.radiance,
+            pos_ws, normal_ws, view_dir, center.sample.hit_position, center.sample.hit_normal,
+            albedo, roughness, metallic);
+    }
+    if (target_pdf_center <= 0.0f)
+        target_pdf_center = calculate_target_pdf(center.sample.radiance);
 
     float weight_center = target_pdf_center * center.W * center.M;
     combined.weight_sum = weight_center;
@@ -230,7 +242,6 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
     float base_angle = random_float(seed) * 2.0f * PI;
 
-    // spatial reuse loop
     for (uint i = 0; i < RESTIR_SPATIAL_SAMPLES; i++)
     {
         float rotation_angle = base_angle + float(i) * 2.39996323f;
@@ -270,12 +281,9 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
         if (all(neighbor.sample.radiance <= 0.0f))
             continue;
 
-        // clamp neighbor radiance to match current path tracer limits
-        float max_rad = (neighbor.sample.path_length > 1) ? 3.0f : 5.0f;
-        neighbor.sample.radiance = min(neighbor.sample.radiance, float3(max_rad, max_rad, max_rad));
         float nb_lum = dot(neighbor.sample.radiance, float3(0.299f, 0.587f, 0.114f));
-        if (nb_lum > max_rad)
-            neighbor.sample.radiance *= max_rad / nb_lum;
+        if (nb_lum > 50.0f)
+            neighbor.sample.radiance *= 50.0f / nb_lum;
 
         float target_pdf_at_center = 0.0f;
         float jacobian = 1.0f;
@@ -286,7 +294,8 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
             if (n_dot_sky <= 0.0f)
                 continue;
 
-            target_pdf_at_center = calculate_target_pdf(neighbor.sample.radiance);
+            target_pdf_at_center = calculate_target_pdf_sky(neighbor.sample.radiance,
+                neighbor.sample.direction, normal_ws, view_dir, albedo, roughness, metallic);
             jacobian = 1.0f;
         }
         else
@@ -294,7 +303,6 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
             if (neighbor.sample.path_length == 0)
                 continue;
 
-            // reject samples whose hit point is in the wrong hemisphere relative to center surface
             float3 dir_to_hit = normalize(neighbor.sample.hit_position - pos_ws);
             float n_dot_l = dot(normal_ws, dir_to_hit);
             if (n_dot_l <= 0.0f)
@@ -308,14 +316,16 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
             if (jacobian <= 0.0f)
                 continue;
 
-            target_pdf_at_center = calculate_target_pdf(neighbor.sample.radiance);
+            target_pdf_at_center = calculate_target_pdf_with_geometry(neighbor.sample.radiance,
+                pos_ws, normal_ws, view_dir, neighbor.sample.hit_position, neighbor.sample.hit_normal,
+                albedo, roughness, metallic);
         }
 
         if (target_pdf_at_center <= 0.0f)
             continue;
 
         float effective_M = min(neighbor.M, max(center.M * 2.0f, 4.0f));
-        float weight = target_pdf_at_center * neighbor.W * effective_M;
+        float weight = target_pdf_at_center * jacobian * neighbor.W * effective_M;
 
         combined.weight_sum += weight;
         combined.M += effective_M;
@@ -329,8 +339,20 @@ void main_cs(uint3 dispatch_id : SV_DispatchThreadID)
 
     clamp_reservoir_M(combined, RESTIR_M_CAP);
 
-    // finalize using luminance-based target PDF
-    float final_target_pdf = calculate_target_pdf(combined.sample.radiance);
+    float final_target_pdf;
+    if (is_sky_sample(combined.sample))
+    {
+        final_target_pdf = calculate_target_pdf_sky(combined.sample.radiance,
+            combined.sample.direction, normal_ws, view_dir, albedo, roughness, metallic);
+    }
+    else
+    {
+        final_target_pdf = calculate_target_pdf_with_geometry(combined.sample.radiance,
+            pos_ws, normal_ws, view_dir, combined.sample.hit_position, combined.sample.hit_normal,
+            albedo, roughness, metallic);
+    }
+    if (final_target_pdf <= 0.0f)
+        final_target_pdf = calculate_target_pdf(combined.sample.radiance);
     combined.target_pdf = final_target_pdf;
 
     if (final_target_pdf > 0 && combined.M > 0)

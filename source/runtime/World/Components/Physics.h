@@ -192,10 +192,14 @@ namespace spartan
         float GetWheelLongitudinalForce(WheelIndex wheel) const;
         float GetWheelAngularVelocity(WheelIndex wheel) const;  // rad/s
         float GetWheelRPM(WheelIndex wheel) const;              // revolutions per minute
-        float GetWheelTemperature(WheelIndex wheel) const;      // celsius
-        float GetWheelTempGripFactor(WheelIndex wheel) const;   // 0.85-1.0 multiplier
-        float GetWheelBrakeTemp(WheelIndex wheel) const;        // brake temperature in celsius
-        float GetWheelBrakeEfficiency(WheelIndex wheel) const;  // 0.6-1.0 multiplier based on brake temp
+        float GetWheelTemperature(WheelIndex wheel) const;
+        float GetWheelTempGripFactor(WheelIndex wheel) const;
+        float GetWheelBrakeTemp(WheelIndex wheel) const;
+        float GetWheelBrakeEfficiency(WheelIndex wheel) const;
+        float GetWheelSurfaceTemp(WheelIndex wheel, int zone) const;
+        float GetWheelCoreTemp(WheelIndex wheel) const;
+        float GetTirePressure() const;
+        float GetTirePressureOptimal() const;
 
         // driver assists
         void SetAbsEnabled(bool enabled);
@@ -213,6 +217,22 @@ namespace spartan
         bool GetTurboEnabled() const;
         float GetBoostPressure() const;                         // current boost pressure (bar)
         float GetBoostMaxPressure() const;                      // max boost pressure (bar)
+
+        // drs (drag reduction system)
+        void SetDrsEnabled(bool enabled);
+        bool GetDrsEnabled() const;
+        void SetDrsActive(bool active);
+        bool GetDrsActive() const;
+
+        // differential type (0 = open, 1 = locked, 2 = lsd)
+        void SetDiffType(int type);
+        int  GetDiffType() const;
+        const char* GetDiffTypeName() const;
+
+        // tire wear
+        float GetWheelWear(WheelIndex wheel) const;            // 0-1, 0 = new, 1 = destroyed
+        float GetWheelWearGripFactor(WheelIndex wheel) const;  // grip multiplier from wear
+        void  ResetTireWear();
 
         // transmission mode
         void SetManualTransmission(bool enabled);

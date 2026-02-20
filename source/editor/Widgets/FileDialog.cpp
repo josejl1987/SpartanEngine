@@ -28,6 +28,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../Widgets/Viewport.h"
 #include <Rendering/Material.h>
 #include "World/Entity.h"
+#include "World/Prefab.h"
+#include "World/World.h"
 #include "World/Components/Script.h"
 //=========================================
 
@@ -594,6 +596,32 @@ void FileDialog::ShowMiddle()
     }
     ImGui::EndChild();
 
+    // drop target for entities dragged from the world hierarchy - saves as a .prefab file
+    if (m_type == FileDialog_Type_Browser)
+    {
+        if (ImGui::BeginDragDropTarget())
+        {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ENTITY"))
+            {
+                if (payload->DataSize == sizeof(uint64_t))
+                {
+                    const uint64_t entity_id = *(const uint64_t*)payload->Data;
+                    if (Entity* entity = World::GetEntityById(entity_id))
+                    {
+                        // save the entity as a .prefab file in the current browser directory
+                        string prefab_path = m_current_path + "/" + entity->GetObjectName() + ".prefab";
+                        if (Prefab::SaveToFile(entity, prefab_path))
+                        {
+                            entity->SetPrefabFilePath(prefab_path);
+                            m_is_dirty = true;
+                        }
+                    }
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+    }
+
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
 }
@@ -1001,11 +1029,12 @@ void FileDialog::ItemDrag(FileDialogItem* item) const
         const string& path_full     = item->GetPath();
         const string& path_relative = item->GetPathRelative();
 
-        if (FileSystem::IsSupportedModelFile(path_full)) { set_payload(ImGuiSp::DragPayloadType::Model,    path_full, path_relative); }
-        if (FileSystem::IsSupportedImageFile(path_full)) { set_payload(ImGuiSp::DragPayloadType::Texture,  path_full, path_relative); }
-        if (FileSystem::IsSupportedAudioFile(path_full)) { set_payload(ImGuiSp::DragPayloadType::Audio,    path_full, path_relative); }
-        if (FileSystem::IsEngineMaterialFile(path_full)) { set_payload(ImGuiSp::DragPayloadType::Material, path_full, path_relative); }
-        if (FileSystem::IsEngineLuaFile(path_full))      { set_payload(ImGuiSp::DragPayloadType::Lua,      path_full, path_relative); }
+        if (FileSystem::IsSupportedModelFile(path_full))  { set_payload(ImGuiSp::DragPayloadType::Model,    path_full, path_relative); }
+        if (FileSystem::IsSupportedImageFile(path_full))  { set_payload(ImGuiSp::DragPayloadType::Texture,  path_full, path_relative); }
+        if (FileSystem::IsSupportedAudioFile(path_full))  { set_payload(ImGuiSp::DragPayloadType::Audio,    path_full, path_relative); }
+        if (FileSystem::IsEngineMaterialFile(path_full))  { set_payload(ImGuiSp::DragPayloadType::Material, path_full, path_relative); }
+        if (FileSystem::IsEngineLuaFile(path_full))       { set_payload(ImGuiSp::DragPayloadType::Lua,      path_full, path_relative); }
+        if (FileSystem::IsEnginePrefabFile(path_full))    { set_payload(ImGuiSp::DragPayloadType::Prefab,   path_full, path_relative); }
 
         // drag preview
         ImGui::BeginTooltip();
@@ -1162,48 +1191,52 @@ void FileDialog::DialogUpdateFromDirectory(const string& file_path)
 
     if (m_filter == FileDialog_Filter_All)
     {
-        for (const string& file_path : paths_anything)
+        for (const string& path : paths_anything)
         {
-            if (FileSystem::IsSupportedImageFile(file_path))
+            if (FileSystem::IsSupportedImageFile(path))
             {
-                ThreadPool::AddTask([this, file_path]()
+                ThreadPool::AddTask([this, path]()
                 {
-                    auto texture = spartan::ResourceCache::Load<RHI_Texture>(file_path);
+                    auto texture = spartan::ResourceCache::Load<RHI_Texture>(path);
                     if (texture)
                     {
                         texture->PrepareForGpu();
                     }
                     lock_guard<mutex> lock(m_mutex_items);
-                    m_items.emplace_back(file_path, texture.get());
+                    m_items.emplace_back(path, texture.get());
                 });
             }
-            else if (FileSystem::IsSupportedAudioFile(file_path))
+            else if (FileSystem::IsSupportedAudioFile(path))
             {
-                m_items.emplace_back(file_path, spartan::ResourceCache::GetIcon(spartan::IconType::Audio));
+                m_items.emplace_back(path, spartan::ResourceCache::GetIcon(spartan::IconType::Audio));
             }
-            else if (FileSystem::IsSupportedModelFile(file_path))
+            else if (FileSystem::IsSupportedModelFile(path))
             {
-                m_items.emplace_back(file_path, spartan::ResourceCache::GetIcon(spartan::IconType::Model));
+                m_items.emplace_back(path, spartan::ResourceCache::GetIcon(spartan::IconType::Model));
             }
-            else if (FileSystem::IsSupportedFontFile(file_path))
+            else if (FileSystem::IsSupportedFontFile(path))
             {
-                m_items.emplace_back(file_path, spartan::ResourceCache::GetIcon(spartan::IconType::Font));
+                m_items.emplace_back(path, spartan::ResourceCache::GetIcon(spartan::IconType::Font));
             }
-            else if (FileSystem::IsEngineMaterialFile(file_path))
+            else if (FileSystem::IsEngineMaterialFile(path))
             {
-                m_items.emplace_back(file_path, spartan::ResourceCache::GetIcon(spartan::IconType::Material));
+                m_items.emplace_back(path, spartan::ResourceCache::GetIcon(spartan::IconType::Material));
             }
-            else if (FileSystem::IsEngineWorldFile(file_path))
+            else if (FileSystem::IsEnginePrefabFile(path))
             {
-                m_items.emplace_back(file_path, spartan::ResourceCache::GetIcon(spartan::IconType::World));
+                m_items.emplace_back(path, spartan::ResourceCache::GetIcon(spartan::IconType::Entity));
             }
-            else if (FileSystem::GetExtensionFromFilePath(file_path) == ".7z")
+            else if (FileSystem::IsEngineWorldFile(path))
             {
-                m_items.emplace_back(file_path, spartan::ResourceCache::GetIcon(spartan::IconType::Compressed));
+                m_items.emplace_back(path, spartan::ResourceCache::GetIcon(spartan::IconType::World));
+            }
+            else if (FileSystem::GetExtensionFromFilePath(path) == ".7z")
+            {
+                m_items.emplace_back(path, spartan::ResourceCache::GetIcon(spartan::IconType::Compressed));
             }
             else
             {
-                m_items.emplace_back(file_path, spartan::ResourceCache::GetIcon(spartan::IconType::Undefined));
+                m_items.emplace_back(path, spartan::ResourceCache::GetIcon(spartan::IconType::Undefined));
             }
         }
     }

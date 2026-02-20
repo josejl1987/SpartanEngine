@@ -36,6 +36,7 @@ namespace spartan
     class AudioSource;
     class Terrain;
     class Spline;
+    class SplineFollower;
     class Volume;
     class Script;
     class Component;
@@ -65,10 +66,12 @@ private:
     void ShowCamera(spartan::Camera* camera) const;
     void ShowTerrain(spartan::Terrain* terrain) const;
     void ShowSpline(spartan::Spline* spline) const;
+    void ShowSplineFollower(spartan::SplineFollower* follower) const;
     void ShowAudioSource(spartan::AudioSource* audio_source) const;
     void ShowVolume(spartan::Volume* volume) const;
     void ShowParticleSystem(spartan::ParticleSystem* particle_system) const;
 
     void ShowAddComponentButton() const;
     void ComponentContextMenu_Add() const;
+    void ShowSaveAsPrefabPopup(spartan::Entity* entity) const;
 };
