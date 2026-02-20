@@ -72,6 +72,15 @@ inline errno_t localtime_s(struct tm* _tm, const time_t* time) {
     return localtime_r(time, _tm) ? 0 : 1;
 }
 
+inline errno_t fopen_s(FILE** pFile, const char* filename, const char* mode) {
+    if (!pFile || !filename || !mode) {
+        if (pFile) *pFile = nullptr;
+        return EINVAL;
+    }
+    *pFile = fopen(filename, mode);
+    return (*pFile != nullptr) ? 0 : errno;
+}
+
 // Template overloads for fixed-size arrays (MSVC compatibility)
 template <size_t N>
 inline int strncpy_s(char (&dest)[N], const char* src, size_t count) {

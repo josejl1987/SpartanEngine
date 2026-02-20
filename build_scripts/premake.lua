@@ -199,7 +199,7 @@ function spartan_project_configuration()
                 "/usr/include/lua5.4",
                 "../third_party/free_image",
                 "../third_party/openxr",
-                "../third_party/lua/sol"
+                "../third_party/lua/"
             }
 
         -- Vulkan-specific includes (Windows only)
