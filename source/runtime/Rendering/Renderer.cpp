@@ -366,7 +366,7 @@ namespace spartan
 
             if (!is_loading)
             {
-                UpdateAccelerationStructures(m_cmd_list_present);
+                UpdateAccelerationStructures(m_cmd_list_compute);
             }
     
             // periodic resource cleanup
