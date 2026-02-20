@@ -45,4 +45,4 @@ namespace spartan
         inline static bool m_gpu_timing_enabled              = true;  // measures gpu execution times for profiling and performance analysis
         inline static bool m_shader_optimization_enabled     = true;  // enables shader compiler optimizations to improve performance and efficiency
     };
-
+}
