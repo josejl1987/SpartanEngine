@@ -222,7 +222,9 @@ namespace spartan
 
         if (RHI_Device::GetPrimaryPhysicalDevice()->IsBelowMinimumRequirements())
         {
+            Window::SetSplashScreenVisible(false);
             SP_WARNING_WINDOW("The GPU does not meet the minimum requirements for running the engine. The engine might be missing features and it won't perform as expected.");
+            Window::SetSplashScreenVisible(true);
         }
 
         // events
