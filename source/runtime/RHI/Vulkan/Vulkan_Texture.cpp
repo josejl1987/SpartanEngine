@@ -25,6 +25,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../RHI_Device.h"
 #include "../RHI_Texture.h"
 #include "../RHI_CommandList.h"
+#include "../../Core/Breadcrumbs.h"
 //================================
 
 //= NAMESPACES ===============
@@ -206,10 +207,15 @@ namespace spartan
                     uint32_t mip_depth  = texture->GetType() == RHI_Texture_Type::Type3D ? (depth >> mip_index) : 1;
                     size_t size         = RHI_Texture::CalculateMipSize(mip_width, mip_height, mip_depth, texture->GetFormat(), texture->GetBitsPerChannel(), texture->GetChannelCount());
         
+                    // match the alignment used in the region offset calculation above,
+                    // otherwise the gpu reads from aligned offsets but the data sits elsewhere
+                    buffer_offset = (buffer_offset + buffer_alignment - 1) & ~(buffer_alignment - 1);
+
                     RHI_Texture_Mip* mip = texture->GetMip(array_index, mip_index);
                     if (mip && !mip->bytes.empty())
                     {
-                        memcpy(static_cast<std::byte*>(mapped_data) + buffer_offset, mip->bytes.data(), size);
+                        size_t copy_size = min(size, mip->bytes.size());
+                        memcpy(static_cast<std::byte*>(mapped_data) + buffer_offset, mip->bytes.data(), copy_size);
                     }
         
                     buffer_offset += size;
@@ -229,6 +235,12 @@ namespace spartan
             // (pcie bar, typically 256 mb) when many textures are uploaded in parallel
             lock_guard<mutex> lock(stage_mutex);
 
+            {
+                char marker[128];
+                snprintf(marker, sizeof(marker), "texture_stage: %s", texture->GetObjectName().c_str());
+                Breadcrumbs::BeginMarker(marker);
+            }
+
             void* staging_buffer = nullptr;
         
             // determine region count
@@ -245,14 +257,18 @@ namespace spartan
             array<VkBufferImageCopy, MaxRegions> regions{};
         
             // copy data to staging buffer using stack array
+            Breadcrumbs::BeginMarker("texture_stage_copy_to_buffer");
             copy_to_staging_buffer(texture, regions, staging_buffer);
+            Breadcrumbs::EndMarker(); // copy_to_buffer
         
             // copy the staging buffer into the image
+            Breadcrumbs::BeginMarker("texture_stage_buffer_to_image");
             if (RHI_CommandList* cmd_list = RHI_CommandList::ImmediateExecutionBegin(RHI_Queue_Type::Graphics))
             {
                 RHI_Image_Layout layout = RHI_Image_Layout::Transfer_Destination;
         
                 cmd_list->InsertBarrier(texture->GetRhiResource(), texture->GetFormat(), 0, mip_count, depth, layout);
+                cmd_list->FlushBarriers();
         
                 vkCmdCopyBufferToImage(
                     static_cast<VkCommandBuffer>(cmd_list->GetRhiResource()),
@@ -265,9 +281,12 @@ namespace spartan
         
                 RHI_CommandList::ImmediateExecutionEnd(cmd_list);
             }
+            Breadcrumbs::EndMarker(); // buffer_to_image
         
             if (staging_buffer)
                 RHI_Device::MemoryBufferDestroy(staging_buffer);
+
+            Breadcrumbs::EndMarker(); // texture_stage
         }
 
         RHI_Image_Layout GetAppropriateLayout(RHI_Texture* texture)
@@ -293,7 +312,9 @@ namespace spartan
         SP_ASSERT_MSG(m_height != 0, "Height can't be zero");
 
         // create image
+        Breadcrumbs::BeginMarker("texture_create_image");
         RHI_Device::MemoryTextureCreate(this);
+        Breadcrumbs::EndMarker(); // create_image
 
         // if the texture has any data, stage it
         if (HasData())
@@ -302,6 +323,7 @@ namespace spartan
         }
 
         // transition to target layout
+        Breadcrumbs::BeginMarker("texture_layout_transition");
         if (RHI_CommandList* cmd_list = RHI_CommandList::ImmediateExecutionBegin(RHI_Queue_Type::Graphics))
         {
             uint32_t array_length          = m_type == RHI_Texture_Type::Type3D ? 1 : m_depth;
@@ -327,8 +349,10 @@ namespace spartan
             // flush
             RHI_CommandList::ImmediateExecutionEnd(cmd_list);
         }
+        Breadcrumbs::EndMarker(); // layout_transition
 
         // create image views
+        Breadcrumbs::BeginMarker("texture_create_views");
         {
             // shader resource views
             if (IsSrv() || IsUav())
@@ -379,6 +403,7 @@ namespace spartan
             // name the image and image view(s)
             set_debug_name(this);
         }
+        Breadcrumbs::EndMarker(); // create_views
 
         return true;
     }

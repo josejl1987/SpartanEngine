@@ -113,7 +113,7 @@ float compute_focus_distance(float2 resolution)
         float2 offset = float2(cos(angle), sin(angle)) * radius;
         float2 uv = center + offset;
         
-        depths[i] = get_linear_depth(uv);
+        depths[i] = get_linear_depth(uv * buffer_frame.resolution_scale);
         
         // weight by proximity to center (gaussian-ish falloff)
         float dist = length(offset) / FOCUS_REGION;
@@ -225,7 +225,7 @@ float3 bokeh_gather(float2 uv, float center_coc, float center_depth, float focus
             continue;
         
         float3 sample_color = tex.SampleLevel(samplers[sampler_bilinear_clamp], sample_uv, 0).rgb;
-        float sample_depth = get_linear_depth(sample_uv);
+        float sample_depth = get_linear_depth(sample_uv * buffer_frame.resolution_scale);
         float sample_coc = compute_coc(sample_depth, focus_dist, aperture, resolution);
         
         float w = sample_weight(sample_coc, center_coc, sample_depth, center_depth, r);
@@ -259,7 +259,7 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
     float focus_distance = compute_focus_distance(resolution);
     
     // compute coc for this pixel
-    float depth = get_linear_depth(uv);
+    float depth = get_linear_depth(uv * buffer_frame.resolution_scale);
     float coc = compute_coc(depth, focus_distance, aperture, resolution);
     
     // perform depth-aware bokeh blur

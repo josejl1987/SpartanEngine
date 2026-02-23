@@ -99,7 +99,7 @@ float2 filter_velocity(float2 uv, float2 texel_size, float2 center_velocity)
     for (int i = 0; i < 8; ++i)
     {
         float2 sample_uv = uv + offsets[i] * texel_size * VELOCITY_FILTER_RADIUS;
-        float2 sample_vel = tex_velocity.SampleLevel(samplers[sampler_bilinear_clamp], sample_uv, 0).xy;
+        float2 sample_vel = tex_velocity.SampleLevel(samplers[sampler_bilinear_clamp], sample_uv * buffer_frame.resolution_scale, 0).xy;
         float sample_len = length(sample_vel);
 
         if (sample_len > 0.001f)
@@ -144,7 +144,7 @@ float compute_velocity_confidence(float2 uv, float2 velocity, float2 texel_size)
         float2 offset = vel_dir * t * VELOCITY_FILTER_RADIUS * 2.0f;
         float2 sample_uv = uv + offset * texel_size;
 
-        float2 sample_vel = tex_velocity.SampleLevel(samplers[sampler_bilinear_clamp], sample_uv, 0).xy;
+        float2 sample_vel = tex_velocity.SampleLevel(samplers[sampler_bilinear_clamp], sample_uv * buffer_frame.resolution_scale, 0).xy;
         float sample_len = length(sample_vel);
 
         if (sample_len > 0.001f)
@@ -186,10 +186,11 @@ float4 motion_blur_reconstruction(
 
     // sample center
     float4 center_color = tex.SampleLevel(samplers[sampler_bilinear_clamp], uv, 0);
-    float  center_depth = get_linear_depth(uv);
+    float2 render_uv    = uv * buffer_frame.resolution_scale;
+    float  center_depth = get_linear_depth(render_uv);
 
     // get and filter velocity for smoother results
-    float2 raw_velocity = tex_velocity.SampleLevel(samplers[sampler_bilinear_clamp], uv, 0).xy;
+    float2 raw_velocity = tex_velocity.SampleLevel(samplers[sampler_bilinear_clamp], render_uv, 0).xy;
     float2 velocity = filter_velocity(uv, texel_size, raw_velocity);
 
     // convert to pixels
@@ -251,8 +252,8 @@ float4 motion_blur_reconstruction(
         if (is_valid_uv(uv_fwd))
         {
             float4 sample_color = tex.SampleLevel(samplers[sampler_bilinear_clamp], uv_fwd, 0);
-            float  sample_depth = get_linear_depth(uv_fwd);
-            float2 sample_vel   = tex_velocity.SampleLevel(samplers[sampler_bilinear_clamp], uv_fwd, 0).xy;
+            float  sample_depth = get_linear_depth(uv_fwd * buffer_frame.resolution_scale);
+            float2 sample_vel   = tex_velocity.SampleLevel(samplers[sampler_bilinear_clamp], uv_fwd * buffer_frame.resolution_scale, 0).xy;
             float  sample_blur  = length(sample_vel * resolution) * shutter_ratio;
 
             // depth-aware weighting
@@ -274,8 +275,8 @@ float4 motion_blur_reconstruction(
         if (is_valid_uv(uv_bwd))
         {
             float4 sample_color = tex.SampleLevel(samplers[sampler_bilinear_clamp], uv_bwd, 0);
-            float  sample_depth = get_linear_depth(uv_bwd);
-            float2 sample_vel   = tex_velocity.SampleLevel(samplers[sampler_bilinear_clamp], uv_bwd, 0).xy;
+            float  sample_depth = get_linear_depth(uv_bwd * buffer_frame.resolution_scale);
+            float2 sample_vel   = tex_velocity.SampleLevel(samplers[sampler_bilinear_clamp], uv_bwd * buffer_frame.resolution_scale, 0).xy;
             float  sample_blur  = length(sample_vel * resolution) * shutter_ratio;
 
             // depth-aware weighting

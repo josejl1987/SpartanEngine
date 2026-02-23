@@ -31,7 +31,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "common_resources.hlsl"
 
 // compression parameters packed into the push constant values:
-// values[0].x = num_block_x      (uint via asuint)
+// values[0].x = num_block_x       (uint via asuint)
 // values[0].y = num_total_blocks  (uint via asuint)
 // values[0].z = quality           (float)
 // values[0].w = input_mip_offset  (uint via asuint) - pixel offset into input buffer
