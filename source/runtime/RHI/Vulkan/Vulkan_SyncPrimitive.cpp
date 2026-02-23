@@ -45,7 +45,12 @@ namespace spartan
 
         void wait(uint64_t timeout, void*& resource)
         {
-            SP_ASSERT_VK(vkWaitForFences(RHI_Context::device, 1, reinterpret_cast<VkFence*>(&resource), true, timeout));
+            VkResult result = vkWaitForFences(RHI_Context::device, 1, reinterpret_cast<VkFence*>(&resource), true, timeout);
+            if (result == VK_ERROR_DEVICE_LOST)
+            {
+                RHI_Device::SetDeviceLost();
+            }
+            SP_ASSERT_VK(result);
         }
 
         void reset(void*& resource)
@@ -84,7 +89,12 @@ namespace spartan
             semaphore_wait_info.pSemaphores         = reinterpret_cast<VkSemaphore*>(&resource);
             semaphore_wait_info.pValues             = &value;
 
-            SP_ASSERT_VK(vkWaitSemaphores(RHI_Context::device, &semaphore_wait_info, timeout));
+            VkResult result = vkWaitSemaphores(RHI_Context::device, &semaphore_wait_info, timeout);
+            if (result == VK_ERROR_DEVICE_LOST)
+            {
+                RHI_Device::SetDeviceLost();
+            }
+            SP_ASSERT_VK(result);
         }
 
         void signal(const uint64_t value, void*& resource)

@@ -713,6 +713,16 @@ namespace spartan
         // todo: implement texture to buffer copy
     }
 
+    void RHI_CommandList::CopyBufferToBuffer(void* source, RHI_Buffer* destination, uint64_t size)
+    {
+        // todo: implement raw buffer to buffer copy
+    }
+
+    void RHI_CommandList::CopyBufferToBuffer(RHI_Buffer* source, RHI_Buffer* destination, uint64_t size)
+    {
+        // todo: implement buffer to buffer copy
+    }
+
     namespace immediate_execution
     {
         static mutex mutex_execution;
@@ -722,6 +732,9 @@ namespace spartan
 
     RHI_CommandList* RHI_CommandList::ImmediateExecutionBegin(const RHI_Queue_Type queue_type)
     {
+        if (RHI_Device::IsDeviceLost())
+            return nullptr;
+
         // serialize immediate submissions so parallel texture loading doesn't race on the queue
         unique_lock<mutex> lock(immediate_execution::mutex_execution);
         immediate_execution::condition_var.wait(lock, [] { return !immediate_execution::is_executing; });

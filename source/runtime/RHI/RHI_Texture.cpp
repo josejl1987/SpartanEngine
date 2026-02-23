@@ -46,8 +46,6 @@ namespace spartan
 {
     namespace compressonator
     {
-        RHI_Format destination_format = RHI_Format::BC3_Unorm;
-
         CMP_FORMAT to_cmp_format(const RHI_Format format)
         {
             // input
@@ -55,14 +53,20 @@ namespace spartan
                 return CMP_FORMAT::CMP_FORMAT_RGBA_8888;
 
             // output
-            if (format == RHI_Format::ASTC)
-                return CMP_FORMAT::CMP_FORMAT_ASTC; // that's a build option in the compressonator
+            if (format == RHI_Format::BC1_Unorm)
+                return CMP_FORMAT::CMP_FORMAT_BC1;
 
             if (format == RHI_Format::BC3_Unorm)
                 return CMP_FORMAT::CMP_FORMAT_BC3;
 
+            if (format == RHI_Format::BC5_Unorm)
+                return CMP_FORMAT::CMP_FORMAT_BC5;
+
             if (format == RHI_Format::BC7_Unorm)
                 return CMP_FORMAT::CMP_FORMAT_BC7;
+
+            if (format == RHI_Format::ASTC)
+                return CMP_FORMAT::CMP_FORMAT_ASTC;
 
             SP_ASSERT_MSG(false, "No equivalent format");
             return CMP_FORMAT::CMP_FORMAT_Unknown;
@@ -121,16 +125,20 @@ namespace spartan
         {
             SP_ASSERT(texture != nullptr);
 
+            RHI_Format target = texture->GetCompressionFormat();
+            if (target == RHI_Format::Max)
+                target = RHI_Format::BC3_Unorm;
+
             char marker[128];
             snprintf(marker, sizeof(marker), "texture_compress_cpu: %s", texture->GetObjectName().c_str());
             Breadcrumbs::BeginMarker(marker);
 
             for (uint32_t mip_index = 0; mip_index < texture->GetMipCount(); mip_index++)
             {
-                compress(texture, mip_index, destination_format);
+                compress(texture, mip_index, target);
             }
 
-            texture->SetFormat(destination_format);
+            texture->SetFormat(target);
 
             Breadcrumbs::EndMarker();
         }
@@ -140,21 +148,46 @@ namespace spartan
     {
         static mutex compress_mutex;
 
-        bool compress_bc3(RHI_Texture* texture)
+        bool compress(RHI_Texture* texture, RHI_Format target_format)
         {
             SP_ASSERT(texture != nullptr);
 
-            // gpu-av instruments every dispatch with its own buffers, eating vram that
-            // the compression buffers need - fall back to cpu compression instead
-            if (Debugging::IsGpuAssistedValidationEnabled())
+            if (Debugging::IsGpuAssistedValidationEnabled() || RHI_Device::IsDeviceLost())
                 return false;
 
-            RHI_Shader* shader = Renderer::GetShader(Renderer_Shader::texture_compress_bc3_c);
+            // select shader based on target format
+            Renderer_Shader shader_type;
+            uint32_t output_element_size = 0; // bytes per compressed block in the output buffer
+            uint32_t block_bytes         = 0; // bytes per compressed block on disk
+            const char* pso_name         = nullptr;
+            switch (target_format)
+            {
+                case RHI_Format::BC1_Unorm:
+                    shader_type         = Renderer_Shader::texture_compress_bc1_c;
+                    output_element_size = sizeof(uint32_t) * 2; // uint2
+                    block_bytes         = 8;
+                    pso_name            = "texture_compress_bc1";
+                    break;
+                case RHI_Format::BC3_Unorm:
+                    shader_type         = Renderer_Shader::texture_compress_bc3_c;
+                    output_element_size = sizeof(uint32_t) * 4; // uint4
+                    block_bytes         = 16;
+                    pso_name            = "texture_compress_bc3";
+                    break;
+                case RHI_Format::BC5_Unorm:
+                    shader_type         = Renderer_Shader::texture_compress_bc5_c;
+                    output_element_size = sizeof(uint32_t) * 4; // uint4
+                    block_bytes         = 16;
+                    pso_name            = "texture_compress_bc5";
+                    break;
+                default:
+                    return false;
+            }
+
+            RHI_Shader* shader = Renderer::GetShader(shader_type);
             if (!shader || !shader->IsCompiled())
                 return false;
 
-            // serialize gpu compression to avoid blowing through vram when
-            // many textures are loaded in parallel during world loading
             lock_guard<mutex> lock(compress_mutex);
 
             char marker[128];
@@ -165,7 +198,6 @@ namespace spartan
             const uint32_t height    = texture->GetHeight();
             const uint32_t mip_count = texture->GetMipCount();
 
-            // compute per-mip layout: block counts, output offsets, and input pixel offsets
             uint32_t total_blocks       = 0;
             uint32_t total_input_pixels = 0;
             vector<uint32_t> mip_output_offsets(mip_count);
@@ -194,11 +226,21 @@ namespace spartan
                 return false;
             }
 
+            // the 1D dispatch linearizes all blocks for a mip into groupID.x;
+            // bail to cpu if the base mip exceeds the vulkan dispatch limit
+            {
+                uint32_t max_dispatch_groups = (mip_block_counts[0] + 3) / 4;
+                if (max_dispatch_groups > 65535)
+                {
+                    Breadcrumbs::EndMarker(); // compress_gpu
+                    return false;
+                }
+            }
+
             // bail out to cpu compression if we don't have enough vram headroom
-            // the input buffer is device-local, output is host-visible, plus we need a staging buffer
             uint64_t min_alignment = RHI_Device::PropertyGetMinStorageBufferOffsetAlignment();
             uint64_t input_stride  = sizeof(uint32_t);
-            uint64_t output_stride = sizeof(uint32_t) * 4;
+            uint64_t output_stride = output_element_size;
             if (min_alignment > 0)
             {
                 if (min_alignment != input_stride)
@@ -217,7 +259,6 @@ namespace spartan
 
             Breadcrumbs::BeginMarker("texture_compress_gpu_buffer_create");
 
-            // concatenate all mip rgba data into a contiguous cpu-side buffer
             vector<uint32_t> input_pixels(total_input_pixels);
             for (uint32_t mip = 0; mip < mip_count; mip++)
             {
@@ -235,23 +276,22 @@ namespace spartan
                 memcpy(&input_pixels[mip_input_offsets[mip]], mip_data->bytes.data(), pixel_count * sizeof(uint32_t));
             }
 
-            // input buffer is device-local so the gpu reads from fast vram instead of system ram over pcie;
-            // without this, random-access reads from host-visible memory cause tdr on discrete gpus
+            // input buffer is device-local so the gpu reads from fast vram instead of system ram over pcie
             auto input_buffer = make_shared<RHI_Buffer>(
                 RHI_Buffer_Type::Storage,
                 static_cast<uint32_t>(sizeof(uint32_t)),
                 total_input_pixels,
                 nullptr, false,
-                "bc3_compress_input"
+                "compress_input"
             );
 
-            // output buffer stays host-visible for cpu readback (writes are sequential so pcie is fine)
+            // output buffer is also device-local so the gpu writes to fast vram
             auto output_buffer = make_shared<RHI_Buffer>(
                 RHI_Buffer_Type::Storage,
-                static_cast<uint32_t>(sizeof(uint32_t) * 4),
+                static_cast<uint32_t>(output_element_size),
                 total_blocks,
-                nullptr, true,
-                "bc3_compress_output"
+                nullptr, false,
+                "compress_output"
             );
 
             if (!input_buffer->GetRhiResource() || !output_buffer->GetRhiResource())
@@ -262,22 +302,40 @@ namespace spartan
                 return false;
             }
 
-            // staging buffer for uploading pixel data to the device-local input buffer
-            uint64_t staging_size = static_cast<uint64_t>(total_input_pixels) * sizeof(uint32_t);
-            void* staging_buffer  = nullptr;
-            RHI_Device::MemoryBufferCreate(
-                staging_buffer, staging_size,
-                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                input_pixels.data(), "bc3_compress_staging"
+            // host-visible readback buffer for copying compressed output back to cpu
+            auto readback_buffer = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage,
+                static_cast<uint32_t>(output_element_size),
+                total_blocks,
+                nullptr, true,
+                "compress_readback"
             );
-            if (!staging_buffer)
+
+            if (!readback_buffer->GetRhiResource())
+            {
+                SP_LOG_ERROR("failed to create readback buffer for gpu compression");
+                Breadcrumbs::EndMarker(); // buffer_create
+                Breadcrumbs::EndMarker(); // compress_gpu
+                return false;
+            }
+
+            // host-visible staging buffer for uploading pixel data to the device-local input buffer
+            uint64_t staging_size = static_cast<uint64_t>(total_input_pixels) * sizeof(uint32_t);
+            auto staging_buffer = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage,
+                static_cast<uint32_t>(sizeof(uint32_t)),
+                total_input_pixels,
+                nullptr, true,
+                "compress_staging"
+            );
+            if (!staging_buffer->GetRhiResource() || !staging_buffer->GetMappedData())
             {
                 SP_LOG_ERROR("failed to create staging buffer for gpu compression");
                 Breadcrumbs::EndMarker(); // buffer_create
                 Breadcrumbs::EndMarker(); // compress_gpu
                 return false;
             }
+            memcpy(staging_buffer->GetMappedData(), input_pixels.data(), staging_size);
 
             Breadcrumbs::EndMarker(); // buffer_create
 
@@ -288,45 +346,40 @@ namespace spartan
                 return f;
             };
 
-            // single command list: staging copy followed by all mip compression dispatches
+            // single command buffer: staging upload -> all mip dispatches -> readback copy
+            // all compute reads/writes are device-local vram so the total gpu time is minimal
             Breadcrumbs::BeginMarker("texture_compress_gpu_dispatch");
             {
-                RHI_CommandList* cmd_list = RHI_CommandList::ImmediateExecutionBegin(RHI_Queue_Type::Graphics);
+                RHI_CommandList* cmd_list = RHI_CommandList::ImmediateExecutionBegin(RHI_Queue_Type::Compute);
                 if (!cmd_list)
                 {
-                    RHI_Device::MemoryBufferDestroy(staging_buffer);
                     Breadcrumbs::EndMarker(); // dispatch
                     Breadcrumbs::EndMarker(); // compress_gpu
                     return false;
                 }
 
-                // copy staging → device-local input
+                // stage 1: upload pixel data from cpu to device-local input buffer
                 {
-                    VkBufferCopy copy_region = {};
-                    copy_region.size         = staging_size;
-                    vkCmdCopyBuffer(
-                        static_cast<VkCommandBuffer>(cmd_list->GetRhiResource()),
-                        *reinterpret_cast<VkBuffer*>(&staging_buffer),
-                        static_cast<VkBuffer>(input_buffer->GetRhiResource()),
-                        1, &copy_region
-                    );
-
-                    // wait for the copy to finish before compute reads
+                    cmd_list->CopyBufferToBuffer(staging_buffer.get(), input_buffer.get(), staging_size);
                     cmd_list->InsertBarrier(input_buffer.get());
                 }
 
-                // dispatch compression for each mip
+                // stage 2: compress all mips (vram to vram, no pcie traffic)
                 for (uint32_t mip = 0; mip < mip_count; mip++)
                 {
                     uint32_t mip_h = max(1u, height >> mip);
 
                     RHI_PipelineState pso;
-                    pso.name = "texture_compress_bc3";
+                    pso.name = pso_name;
                     pso.shaders[static_cast<uint32_t>(RHI_Shader_Type::Compute)] = shader;
                     cmd_list->SetPipelineState(pso);
 
-                    cmd_list->SetBuffer(Renderer_BindingsUav::compress_input,  input_buffer.get());
-                    cmd_list->SetBuffer(Renderer_BindingsUav::compress_output, output_buffer.get());
+                    cmd_list->SetBuffer(Renderer_BindingsUav::compress_input, input_buffer.get());
+
+                    Renderer_BindingsUav output_binding = (target_format == RHI_Format::BC1_Unorm)
+                        ? Renderer_BindingsUav::compress_output_bc1
+                        : Renderer_BindingsUav::compress_output;
+                    cmd_list->SetBuffer(output_binding, output_buffer.get());
 
                     Pcb_Pass pass = {};
                     pass.v[0]     = uint_as_float(mip_blocks_x[mip]);
@@ -345,19 +398,28 @@ namespace spartan
                     cmd_list->InsertBarrier(output_buffer.get());
                 }
 
+                // compute->transfer barrier so the readback copy sees completed writes
+                cmd_list->InsertBarrier(RHI_Barrier::buffer_sync(output_buffer.get()).from(RHI_Barrier_Scope::Compute).to(RHI_Barrier_Scope::Transfer));
+                cmd_list->FlushBarriers();
+
+                // stage 3: copy compressed output from device-local to host-visible readback
+                {
+                    uint64_t copy_size = static_cast<uint64_t>(total_blocks) * output_element_size;
+                    cmd_list->CopyBufferToBuffer(output_buffer.get(), readback_buffer.get(), copy_size);
+                }
+
                 RHI_CommandList::ImmediateExecutionEnd(cmd_list);
             }
             Breadcrumbs::EndMarker(); // dispatch
 
-            // the staging buffer is no longer needed after the gpu copy
-            RHI_Device::MemoryBufferDestroy(staging_buffer);
+            staging_buffer.reset();
 
-            // read back compressed data from the mapped output buffer
             Breadcrumbs::BeginMarker("texture_compress_gpu_readback");
-            void* mapped = output_buffer->GetMappedData();
+
+            void* mapped = readback_buffer->GetMappedData();
             if (!mapped)
             {
-                SP_LOG_ERROR("gpu compression buffer has no mapped data for readback");
+                SP_LOG_ERROR("gpu compression readback buffer has no mapped data");
                 Breadcrumbs::EndMarker(); // readback
                 Breadcrumbs::EndMarker(); // compress_gpu
                 return false;
@@ -365,8 +427,8 @@ namespace spartan
 
             for (uint32_t mip = 0; mip < mip_count; mip++)
             {
-                uint32_t mip_size_bytes = mip_block_counts[mip] * 16;
-                uint8_t* src            = reinterpret_cast<uint8_t*>(mapped) + mip_output_offsets[mip] * 16;
+                uint32_t mip_size_bytes = mip_block_counts[mip] * block_bytes;
+                uint8_t* src            = reinterpret_cast<uint8_t*>(mapped) + mip_output_offsets[mip] * output_element_size;
 
                 RHI_Texture_Mip* mip_data = texture->GetMip(0, mip);
                 if (mip_data)
@@ -377,13 +439,11 @@ namespace spartan
             }
             Breadcrumbs::EndMarker(); // readback
 
-            // free gpu memory immediately - the gpu work is already complete
-            // (ImmediateExecutionEnd waits), so bypassing the deferred deletion
-            // queue prevents vram accumulation when many textures are compressed
             input_buffer->DestroyResourceImmediate();
             output_buffer->DestroyResourceImmediate();
+            readback_buffer->DestroyResourceImmediate();
 
-            texture->SetFormat(compressonator::destination_format);
+            texture->SetFormat(target_format);
 
             Breadcrumbs::EndMarker(); // compress_gpu
             return true;
@@ -868,12 +928,14 @@ namespace spartan
             }
             Breadcrumbs::EndMarker(); // mip_generation
 
-            // compress - try gpu first, fall back to cpu
+            // compress - format is chosen per-texture (bc3 for packed, bc1 for color, bc5 for normal, etc.)
             bool compress       = m_flags & RHI_Texture_Compress;
             bool not_compressed = !IsCompressedFormat();
             if (compress && not_compressed)
             {
-                if (!gpu_compression::compress_bc3(this))
+                RHI_Format target = m_compression_format != RHI_Format::Max ? m_compression_format : RHI_Format::BC3_Unorm;
+
+                if (!gpu_compression::compress(this, target))
                 {
                     compressonator::compress(this);
                 }
@@ -881,9 +943,12 @@ namespace spartan
         }
         
         // upload to gpu
-        Breadcrumbs::BeginMarker("texture_create_resource");
-        SP_ASSERT(RHI_CreateResource());
-        Breadcrumbs::EndMarker(); // create_resource
+        if (!RHI_Device::IsDeviceLost())
+        {
+            Breadcrumbs::BeginMarker("texture_create_resource");
+            SP_ASSERT(RHI_CreateResource());
+            Breadcrumbs::EndMarker(); // create_resource
+        }
 
         ComputeMemoryUsage();
 

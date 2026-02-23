@@ -777,8 +777,12 @@ namespace spartan
         }
 
         // gpu texture compression - compiled synchronously since it's needed during texture loading
+        shader(Renderer_Shader::texture_compress_bc1_c) = make_shared<RHI_Shader>();
+        shader(Renderer_Shader::texture_compress_bc1_c)->Compile(RHI_Shader_Type::Compute, shader_dir + "texture_compress_bc1.hlsl", false);
         shader(Renderer_Shader::texture_compress_bc3_c) = make_shared<RHI_Shader>();
         shader(Renderer_Shader::texture_compress_bc3_c)->Compile(RHI_Shader_Type::Compute, shader_dir + "texture_compress_bc3.hlsl", false);
+        shader(Renderer_Shader::texture_compress_bc5_c) = make_shared<RHI_Shader>();
+        shader(Renderer_Shader::texture_compress_bc5_c)->Compile(RHI_Shader_Type::Compute, shader_dir + "texture_compress_bc5.hlsl", false);
 
     }
 

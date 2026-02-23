@@ -180,6 +180,7 @@ namespace spartan
         // gpu texture compression
         compress_input         = 40,
         compress_output        = 41,
+        compress_output_bc1    = 42,
     };
 
     enum class Renderer_Shader : uint8_t
@@ -265,7 +266,9 @@ namespace spartan
         particle_simulate_c,
         particle_render_c,
         // gpu texture compression
+        texture_compress_bc1_c,
         texture_compress_bc3_c,
+        texture_compress_bc5_c,
         max
     };
     

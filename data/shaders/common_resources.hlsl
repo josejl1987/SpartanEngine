@@ -320,8 +320,9 @@ RWStructuredBuffer<uint>          particle_counter  : register(u38);
 RWStructuredBuffer<EmitterParams> particle_emitter  : register(u39);
 
 // gpu texture compression
-RWStructuredBuffer<uint>  tex_compress_in  : register(u40);
-RWStructuredBuffer<uint4> tex_compress_out : register(u41);
+RWStructuredBuffer<uint>  tex_compress_in      : register(u40);
+RWStructuredBuffer<uint4> tex_compress_out      : register(u41); // bc3, bc5 (16 bytes per block)
+RWStructuredBuffer<uint2> tex_compress_out_bc1  : register(u42); // bc1 (8 bytes per block)
 
 // buffers
 [[vk::push_constant]]

@@ -54,6 +54,7 @@ namespace spartan
 
     // misc
     bool RHI_Device::m_wide_lines                = false;
+    bool RHI_Device::m_device_lost                = false;
     uint32_t RHI_Device::m_physical_device_index = 0;
     vector<RHI_PhysicalDevice> physical_devices;
 

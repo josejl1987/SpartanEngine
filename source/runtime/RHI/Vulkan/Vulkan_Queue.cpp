@@ -211,6 +211,8 @@ namespace spartan
     
             if (result == VK_ERROR_DEVICE_LOST)
             {
+                RHI_Device::SetDeviceLost();
+
                 if (Debugging::IsBreadcrumbsEnabled())
                 {
                     Breadcrumbs::OnDeviceLost();

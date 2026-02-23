@@ -191,6 +191,8 @@ namespace spartan
         const RHI_CommandListState GetState() const                { return m_state; }
         RHI_Queue* GetQueue() const                                { return m_queue; }
         void CopyTextureToBuffer(RHI_Texture* source, RHI_Buffer* destination);
+        void CopyBufferToBuffer(void* source, RHI_Buffer* destination, uint64_t size);
+        void CopyBufferToBuffer(RHI_Buffer* source, RHI_Buffer* destination, uint64_t size);
 
         // rhi
         void* GetRhiResourcePipeline();

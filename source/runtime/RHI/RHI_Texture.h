@@ -108,6 +108,9 @@ namespace spartan
         static bool IsCompressedFormat(const RHI_Format format);
         bool IsCompressedFormat()               { return IsCompressedFormat(m_format); }
 
+        RHI_Format GetCompressionFormat() const                    { return m_compression_format; }
+        void SetCompressionFormat(const RHI_Format format)         { m_compression_format = format; }
+
         // misc
         void ClearData();
         void PrepareForGpu();
@@ -175,8 +178,9 @@ namespace spartan
         uint32_t m_mip_count        = 0;
         uint32_t m_bits_per_channel = 0;
         uint32_t m_channel_count    = 0;
-        RHI_Format m_format         = RHI_Format::Max;
-        RHI_Texture_Type m_type     = RHI_Texture_Type::Max;
+        RHI_Format m_format             = RHI_Format::Max;
+        RHI_Format m_compression_format = RHI_Format::Max;
+        RHI_Texture_Type m_type         = RHI_Texture_Type::Max;
         RHI_Viewport m_viewport;
         std::vector<RHI_Texture_Slice> m_slices;
 

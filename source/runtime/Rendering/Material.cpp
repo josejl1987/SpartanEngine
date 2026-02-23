@@ -354,7 +354,6 @@ namespace spartan
                 shared_ptr<RHI_Texture> texture_normal_new = ResourceCache::GetByName<RHI_Texture>(normal_name);
                 if (!texture_normal_new)
                 {
-                    // create new normal texture - don't compress to keep raw bytes for repacking
                     texture_normal_new = make_shared<RHI_Texture>(
                         RHI_Texture_Type::Type2D,
                         width,
@@ -362,9 +361,10 @@ namespace spartan
                         depth,
                         mip_count,
                         RHI_Format::R8G8B8A8_Unorm,
-                        RHI_Texture_Srv,
+                        RHI_Texture_Srv | RHI_Texture_Compress,
                         normal_name.c_str()
                     );
+                    texture_normal_new->SetCompressionFormat(RHI_Format::BC5_Unorm);
         
                     // allocate mip
                     texture_normal_new->AllocateMip();
@@ -502,6 +502,7 @@ namespace spartan
                             tex_name.c_str()
                         );
                         texture_packed->SetResourceName(packed_name);
+                        texture_packed->SetCompressionFormat(RHI_Format::BC3_Unorm);
                         
                         // set resource file path so the texture can be cached and properly referenced by materials
                         // the path matches what World::SaveToFile uses when saving textures
@@ -561,6 +562,20 @@ namespace spartan
         
                     material->SetTexture(MaterialTextureType::Packed, texture_packed, slot);
                 }
+            }
+
+            // mark non-packed material textures for compression with appropriate formats;
+            // this runs after packing so the raw data has already been read for channel packing
+            if (texture_color && !texture_color->IsCompressedFormat())
+            {
+                texture_color->SetFlag(RHI_Texture_Compress);
+                texture_color->SetCompressionFormat(texture_color->IsSemiTransparent() ? RHI_Format::BC3_Unorm : RHI_Format::BC1_Unorm);
+            }
+
+            if (texture_normal && !texture_normal->IsCompressedFormat())
+            {
+                texture_normal->SetFlag(RHI_Texture_Compress);
+                texture_normal->SetCompressionFormat(RHI_Format::BC5_Unorm);
             }
         }
     }
