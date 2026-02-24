@@ -109,8 +109,8 @@ namespace spartan
         static std::vector<RHI_PhysicalDevice>& PhysicalDeviceGet();
 
         // device state
-        static bool IsDeviceLost()                                        { return m_device_lost; }
-        static void SetDeviceLost()                                       { m_device_lost = true; }
+        static bool IsDeviceLost()  { return m_device_lost; }
+        static void SetDeviceLost() { m_device_lost = true; }
 
         // misc
         static uint64_t GetBufferDeviceAddress(void* buffer);

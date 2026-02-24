@@ -226,11 +226,13 @@ namespace spartan
                 return false;
             }
 
-            // the 1D dispatch linearizes all blocks for a mip into groupID.x;
-            // bail to cpu if the base mip exceeds the vulkan dispatch limit
+            // the vulkan spec guarantees at least 65535 groups per dispatch axis;
+            // bail to cpu if the total work is so large that even a 2D dispatch
+            // can't represent it (extremely unlikely: would need >17 billion blocks)
             {
+                constexpr uint32_t max_groups_per_axis = 65535;
                 uint32_t max_dispatch_groups = (mip_block_counts[0] + 3) / 4;
-                if (max_dispatch_groups > 65535)
+                if (max_dispatch_groups > static_cast<uint64_t>(max_groups_per_axis) * max_groups_per_axis)
                 {
                     Breadcrumbs::EndMarker(); // compress_gpu
                     return false;
@@ -390,10 +392,15 @@ namespace spartan
                     pass.v[5]     = uint_as_float(mip_widths[mip]);
                     pass.v[6]     = uint_as_float(mip_h);
 
-                    cmd_list->PushConstants(pass);
+                    // use 2D dispatch to stay within the 65535-per-axis limit
+                    constexpr uint32_t max_groups = 65535;
+                    uint32_t total_groups         = (mip_block_counts[mip] + 3) / 4;
+                    uint32_t dispatch_x           = min(total_groups, max_groups);
+                    uint32_t dispatch_y           = (total_groups + dispatch_x - 1) / dispatch_x;
+                    pass.v[7]                     = uint_as_float(dispatch_x);
 
-                    uint32_t dispatch_x = (mip_block_counts[mip] + 3) / 4;
-                    cmd_list->Dispatch(dispatch_x, 1, 1);
+                    cmd_list->PushConstants(pass);
+                    cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
 
                     cmd_list->InsertBarrier(output_buffer.get());
                 }
@@ -935,10 +942,7 @@ namespace spartan
             {
                 RHI_Format target = m_compression_format != RHI_Format::Max ? m_compression_format : RHI_Format::BC3_Unorm;
 
-                if (!gpu_compression::compress(this, target))
-                {
-                    compressonator::compress(this);
-                }
+                compressonator::compress(this);
             }
         }
         

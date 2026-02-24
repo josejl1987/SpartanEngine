@@ -45,6 +45,7 @@ uint  get_input_mip_offset() { return asuint(buffer_pass.values[0].w); }
 uint  get_output_offset()    { return asuint(buffer_pass.values[1].x); }
 uint  get_mip_width()        { return asuint(buffer_pass.values[1].y); }
 uint  get_mip_height()       { return asuint(buffer_pass.values[1].z); }
+uint  get_groups_per_row()   { return asuint(buffer_pass.values[1].w); }
 
 float4 unpack_rgba8(uint packed)
 {
@@ -74,7 +75,8 @@ void main_cs(uint GI : SV_GroupIndex, uint3 groupID : SV_GroupID)
     uint mip_height       = get_mip_height();
 
     uint blockInGroup = GI / MAX_USED_THREAD;
-    uint blockID      = groupID.x * BLOCK_IN_GROUP + blockInGroup;
+    uint linear_group = groupID.y * get_groups_per_row() + groupID.x;
+    uint blockID      = linear_group * BLOCK_IN_GROUP + blockInGroup;
     uint pixelBase    = blockInGroup * MAX_USED_THREAD;
     uint pixelInBlock = GI - pixelBase;
 
