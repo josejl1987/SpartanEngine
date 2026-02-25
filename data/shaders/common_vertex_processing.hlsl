@@ -44,7 +44,7 @@ struct Vertex_PosUvNorTan
 // vertex buffer output
 struct gbuffer_vertex
 {
-    float4 position          : SV_POSITION;
+    precise float4 position  : SV_POSITION;
     float4 position_previous : POS_CLIP_PREVIOUS;
     float3 normal            : NORMAL_WORLD;
     float3 tangent           : TANGENT_WORLD;

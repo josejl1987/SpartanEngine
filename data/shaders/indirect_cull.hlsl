@@ -101,8 +101,9 @@ void main_cs(uint3 dispatch_thread_id : SV_DispatchThreadID)
             float4 box_uvs = float4(min_uv, max_uv);
 
             // select mip level based on screen-space footprint
-            int2   size          = (max_uv - min_uv) * render_size;
-            float  mip           = ceil(log2(max(size.x, size.y)));
+            float2 uv_extent    = max_uv - min_uv;
+            int2   size          = uv_extent * render_size;
+            float  mip           = ceil(log2(max(max(size.x, size.y), 1)));
             float  max_mip_level = pass_get_f4_value().y;
             mip                  = clamp(mip, 0, max_mip_level);
 
@@ -116,6 +117,12 @@ void main_cs(uint3 dispatch_thread_id : SV_DispatchThreadID)
             // use finer level if footprint is small enough
             if (dims.x <= 2 && dims.y <= 2)
                 mip = level_lower;
+
+            // inflate the sampling rect by 1 texel at the selected mip to account for
+            // sub-pixel aabb movement and mip-transition jitter on moving objects
+            float2 mip_texel = exp2(mip) / render_size;
+            box_uvs.xy = saturate(box_uvs.xy - mip_texel);
+            box_uvs.zw = saturate(box_uvs.zw + mip_texel);
 
             // 5-tap hi-z depth sampling
             float4 scaled_uvs = box_uvs * buffer_frame.resolution_scale;
@@ -134,7 +141,7 @@ void main_cs(uint3 dispatch_thread_id : SV_DispatchThreadID)
             // visibility test (reverse z: closer objects have larger z)
             // conservative bias prevents objects at the exact occlusion boundary from flickering
             // due to per-frame variations in hi-z depth, especially for moving objects and occluders
-            is_visible = closest_box_z > furthest_z - 0.001;
+            is_visible = closest_box_z > furthest_z - 0.01;
         }
     }
 
