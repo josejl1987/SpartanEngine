@@ -348,26 +348,12 @@ namespace spartan
                 return f;
             };
 
-            // single command buffer: staging upload -> all mip dispatches -> readback copy
-            // all compute reads/writes are device-local vram so the total gpu time is minimal
+            // split into separate submissions per mip so that no single gpu submission
+            // exceeds the tdr timeout; this also lets the driver jit-compile the shader
+            // on the first (smallest) mip and amortize the cost
             Breadcrumbs::BeginMarker("texture_compress_gpu_dispatch");
             {
-                RHI_CommandList* cmd_list = RHI_CommandList::ImmediateExecutionBegin(RHI_Queue_Type::Compute);
-                if (!cmd_list)
-                {
-                    Breadcrumbs::EndMarker(); // dispatch
-                    Breadcrumbs::EndMarker(); // compress_gpu
-                    return false;
-                }
-
-                // stage 1: upload pixel data from cpu to device-local input buffer
-                {
-                    cmd_list->CopyBufferToBuffer(staging_buffer.get(), input_buffer.get(), staging_size);
-                    cmd_list->InsertBarrier(input_buffer.get());
-                }
-
-                // stage 2: compress all mips (vram to vram, no pcie traffic)
-                for (uint32_t mip = 0; mip < mip_count; mip++)
+                auto dispatch_mip = [&](RHI_CommandList* cmd_list, int mip)
                 {
                     uint32_t mip_h = max(1u, height >> mip);
 
@@ -386,13 +372,12 @@ namespace spartan
                     Pcb_Pass pass = {};
                     pass.v[0]     = uint_as_float(mip_blocks_x[mip]);
                     pass.v[1]     = uint_as_float(mip_block_counts[mip]);
-                    pass.v[2]     = 0.05f;
+                    pass.v[2]     = 0.6f;
                     pass.v[3]     = uint_as_float(mip_input_offsets[mip]);
                     pass.v[4]     = uint_as_float(mip_output_offsets[mip]);
                     pass.v[5]     = uint_as_float(mip_widths[mip]);
                     pass.v[6]     = uint_as_float(mip_h);
 
-                    // use 2D dispatch to stay within the 65535-per-axis limit
                     constexpr uint32_t max_groups = 65535;
                     uint32_t total_groups         = (mip_block_counts[mip] + 3) / 4;
                     uint32_t dispatch_x           = min(total_groups, max_groups);
@@ -401,25 +386,87 @@ namespace spartan
 
                     cmd_list->PushConstants(pass);
                     cmd_list->Dispatch(dispatch_x, dispatch_y, 1);
+                };
 
-                    cmd_list->InsertBarrier(output_buffer.get());
+                // upload pixel data and compress the smallest mip in one submission;
+                // the barrier between copy and dispatch must live in the same command buffer
+                // to guarantee transfer→compute memory visibility
+                {
+                    int first_mip = static_cast<int>(mip_count) - 1;
+
+                    RHI_CommandList* cmd_list = RHI_CommandList::ImmediateExecutionBegin(RHI_Queue_Type::Compute);
+                    if (!cmd_list)
+                    {
+                        Breadcrumbs::EndMarker(); // dispatch
+                        Breadcrumbs::EndMarker(); // compress_gpu
+                        return false;
+                    }
+
+                    cmd_list->CopyBufferToBuffer(staging_buffer.get(), input_buffer.get(), staging_size);
+                    cmd_list->InsertBarrier(RHI_Barrier::buffer_sync(input_buffer.get()).from(RHI_Barrier_Scope::Transfer).to(RHI_Barrier_Scope::Compute));
+                    cmd_list->FlushBarriers();
+
+                    dispatch_mip(cmd_list, first_mip);
+                    RHI_CommandList::ImmediateExecutionEnd(cmd_list);
+
+                    if (RHI_Device::IsDeviceLost())
+                    {
+                        Breadcrumbs::EndMarker(); // dispatch
+                        Breadcrumbs::EndMarker(); // compress_gpu
+                        return false;
+                    }
                 }
 
-                // compute->transfer barrier so the readback copy sees completed writes
-                cmd_list->InsertBarrier(RHI_Barrier::buffer_sync(output_buffer.get()).from(RHI_Barrier_Scope::Compute).to(RHI_Barrier_Scope::Transfer));
-                cmd_list->FlushBarriers();
-
-                // stage 3: copy compressed output from device-local to host-visible readback
+                // compress remaining mips (next-smallest to largest), one submission each
+                for (int mip = static_cast<int>(mip_count) - 2; mip >= 0; mip--)
                 {
+                    RHI_CommandList* cmd_list = RHI_CommandList::ImmediateExecutionBegin(RHI_Queue_Type::Compute);
+                    if (!cmd_list)
+                    {
+                        Breadcrumbs::EndMarker(); // dispatch
+                        Breadcrumbs::EndMarker(); // compress_gpu
+                        return false;
+                    }
+
+                    dispatch_mip(cmd_list, mip);
+                    RHI_CommandList::ImmediateExecutionEnd(cmd_list);
+
+                    if (RHI_Device::IsDeviceLost())
+                    {
+                        Breadcrumbs::EndMarker(); // dispatch
+                        Breadcrumbs::EndMarker(); // compress_gpu
+                        return false;
+                    }
+                }
+
+                // copy compressed output to host-visible readback buffer
+                {
+                    RHI_CommandList* cmd_list = RHI_CommandList::ImmediateExecutionBegin(RHI_Queue_Type::Compute);
+                    if (!cmd_list)
+                    {
+                        Breadcrumbs::EndMarker(); // dispatch
+                        Breadcrumbs::EndMarker(); // compress_gpu
+                        return false;
+                    }
+
+                    cmd_list->InsertBarrier(RHI_Barrier::buffer_sync(output_buffer.get()).from(RHI_Barrier_Scope::Compute).to(RHI_Barrier_Scope::Transfer));
+                    cmd_list->FlushBarriers();
+
                     uint64_t copy_size = static_cast<uint64_t>(total_blocks) * output_element_size;
                     cmd_list->CopyBufferToBuffer(output_buffer.get(), readback_buffer.get(), copy_size);
-                }
 
-                RHI_CommandList::ImmediateExecutionEnd(cmd_list);
+                    RHI_CommandList::ImmediateExecutionEnd(cmd_list);
+                }
             }
             Breadcrumbs::EndMarker(); // dispatch
 
             staging_buffer.reset();
+
+            if (RHI_Device::IsDeviceLost())
+            {
+                Breadcrumbs::EndMarker(); // compress_gpu
+                return false;
+            }
 
             Breadcrumbs::BeginMarker("texture_compress_gpu_readback");
 

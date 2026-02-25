@@ -111,143 +111,102 @@ namespace spartan
         }
     }
 
-    void Breadcrumbs::WriteGpuReport(std::string& report)
-    {
-        if (!m_gpu_buffer)
-            return;
-
-        uint32_t* data = static_cast<uint32_t*>(m_gpu_buffer->GetMappedData());
-        if (!data)
-            return;
-
-        report += "\n=================================================\n";
-        report += "GPU-SIDE BREADCRUMBS (execution trace on gpu)\n";
-        report += "=================================================\n\n";
-
-        // find the last slot the gpu wrote to
-        int32_t last_started_slot  = -1;
-        int32_t last_completed_slot = -1;
-        for (int32_t i = static_cast<int32_t>(m_gpu_marker_count) - 1; i >= 0; i--)
-        {
-            if (data[i] != 0 && last_started_slot < 0)
-            {
-                last_started_slot = i;
-            }
-            if (data[i] == gpu_marker_completed && last_completed_slot < 0)
-            {
-                last_completed_slot = i;
-            }
-            if (last_started_slot >= 0 && last_completed_slot >= 0)
-                break;
-        }
-
-        if (last_started_slot < 0)
-        {
-            report += "no gpu markers were reached - the crash may have\n";
-            report += "occurred before the first tracked operation.\n";
-            return;
-        }
-
-        for (uint32_t i = 0; i < m_gpu_marker_count; i++)
-        {
-            const char* name = m_gpu_marker_names[i];
-            uint32_t value   = data[i];
-
-            if (!name)
-                continue;
-
-            report += "  marker " + std::to_string(i) + ": " + name;
-
-            if (value == 0)
-            {
-                report += "  [not reached]\n";
-            }
-            else if (value == gpu_marker_completed)
-            {
-                report += "  [completed]\n";
-            }
-            else
-            {
-                // started but not completed - this is a candidate for the crash location
-                bool is_last_started = (static_cast<int32_t>(i) == last_started_slot);
-                if (is_last_started)
-                {
-                    report += "  [in progress - LIKELY CULPRIT]\n";
-                }
-                else
-                {
-                    report += "  [started]\n";
-                }
-            }
-        }
-    }
-
     void Breadcrumbs::WriteReport()
     {
         std::string report;
-        report.reserve(8192);
+        report.reserve(4096);
 
-        report += "=================================================\n";
-        report += "GPU CRASH REPORT - Breadcrumbs\n";
-        report += "=================================================\n\n";
+        report += "========================= GPU CRASH REPORT =========================\n\n";
 
-        // cpu-side markers
+        // collect incomplete cpu markers (the crash path)
         std::vector<const Marker*> incomplete_markers;
         for (const auto& marker : m_markers)
         {
             if (marker.state == MarkerState::Started)
-            {
                 incomplete_markers.push_back(&marker);
-            }
         }
 
-        report += "CPU-SIDE MARKERS:\n";
-        report += "-------------------------------------------------\n\n";
-
-        if (incomplete_markers.empty())
-        {
-            report += "no incomplete cpu markers found.\n";
-        }
-        else
-        {
-            report += "incomplete markers (started but never completed):\n\n";
-
-            std::sort(incomplete_markers.begin(), incomplete_markers.end(),
-                [](const Marker* a, const Marker* b)
-                {
-                    if (a->frame_index != b->frame_index)
-                        return a->frame_index < b->frame_index;
-                    return a->depth < b->depth;
-                });
-
-            for (const auto* marker : incomplete_markers)
+        std::sort(incomplete_markers.begin(), incomplete_markers.end(),
+            [](const Marker* a, const Marker* b)
             {
-                auto now  = std::chrono::steady_clock::now();
-                auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(now - marker->start_time);
+                if (a->frame_index != b->frame_index)
+                    return a->frame_index < b->frame_index;
+                return a->depth < b->depth;
+            });
 
-                for (uint32_t d = 0; d < marker->depth; d++)
-                    report += "  ";
+        // collect gpu marker states
+        uint32_t* gpu_data                 = m_gpu_buffer ? static_cast<uint32_t*>(m_gpu_buffer->GetMappedData()) : nullptr;
+        std::string gpu_crash_marker_name;
+        bool has_any_gpu_marker            = false;
 
-                report += "-> frame " + std::to_string(marker->frame_index);
-                report += " | " + std::string(marker->name.data());
-                report += " | running for: " + std::to_string(diff.count()) + "ms\n";
+        // gpu completed markers first (these finished before the crash)
+        if (gpu_data)
+        {
+            for (uint32_t i = 0; i < m_gpu_marker_count; i++)
+            {
+                if (!m_gpu_marker_names[i])
+                    continue;
+
+                if (gpu_data[i] == gpu_marker_completed)
+                {
+                    report += "  [completed]   " + std::string(m_gpu_marker_names[i]) + "\n";
+                    has_any_gpu_marker = true;
+                }
             }
         }
 
-        // gpu-side markers
-        WriteGpuReport(report);
+        // cpu incomplete markers (the crash call stack)
+        uint32_t deepest_depth = 0;
+        for (const auto* m : incomplete_markers)
+            deepest_depth = std::max(deepest_depth, m->depth);
 
-        report += "\n=================================================\n";
-        report += "the gpu-side markers show the exact point where the\n";
-        report += "gpu stopped executing. the last 'in progress' marker\n";
-        report += "is the most likely cause of the crash.\n";
-        report += "=================================================\n";
-
-        std::ofstream file("gpu_crash.txt", std::ios::binary);
-        if (file.good())
+        for (const auto* marker : incomplete_markers)
         {
-            file.write(report.c_str(), report.size());
-            file.close();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - marker->start_time);
+
+            bool is_crash_point = (marker->depth == deepest_depth);
+
+            for (uint32_t d = 0; d < marker->depth; d++)
+                report += "  ";
+
+            report += is_crash_point ? "  [crash]       " : "  [in progress] ";
+            report += std::string(marker->name.data());
+            report += " | frame " + std::to_string(marker->frame_index);
+            report += " | " + std::to_string(elapsed.count()) + "ms\n";
         }
+
+        // gpu in-progress markers (where the gpu stopped)
+        if (gpu_data)
+        {
+            for (uint32_t i = 0; i < m_gpu_marker_count; i++)
+            {
+                if (!m_gpu_marker_names[i] || gpu_data[i] == 0 || gpu_data[i] == gpu_marker_completed)
+                    continue;
+
+                report += "  [gpu crash]   " + std::string(m_gpu_marker_names[i]) + "\n";
+                gpu_crash_marker_name = m_gpu_marker_names[i];
+                has_any_gpu_marker    = true;
+            }
+        }
+
+        // deduce crash point
+        report += "\n---------------------------------------------------------------------\n";
+        if (!gpu_crash_marker_name.empty())
+        {
+            report += "crash point: " + gpu_crash_marker_name + " (gpu stopped executing here)\n";
+        }
+        else if (!incomplete_markers.empty())
+        {
+            report += "crash point: " + std::string(incomplete_markers.back()->name.data()) + "\n";
+        }
+        else if (!has_any_gpu_marker)
+        {
+            report += "no markers were reached, the crash occurred before any tracked operation.\n";
+        }
+        report += "=====================================================================\n";
+
+        Log::SetLogToFile(true);
+        SP_LOG_ERROR("%s", report.c_str());
     }
 }

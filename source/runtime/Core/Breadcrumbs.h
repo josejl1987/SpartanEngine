@@ -27,7 +27,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <array>
 #include <atomic>
 #include <mutex>
-#include <fstream>
 #include <chrono>
 #include <algorithm>
 #include "Definitions.h"
@@ -160,7 +159,6 @@ namespace spartan
     private:
         static void ResetGpuMarkers();
         static void WriteReport();
-        static void WriteGpuReport(std::string& report);
 
         // cpu-side markers
         inline static std::vector<Marker> m_markers;

@@ -72,15 +72,14 @@ void main_cs(uint GI : SV_GroupIndex, uint3 groupID : SV_GroupID)
     uint pixelBase    = blockInGroup * MAX_USED_THREAD;
     uint pixelInBlock = GI - pixelBase;
 
-    if (blockID >= num_total_blocks)
-        return;
+    bool valid_block = (blockID < num_total_blocks);
 
     uint block_y = blockID / num_block_x;
     uint block_x = blockID - block_y * num_block_x;
     uint base_x  = block_x * BLOCK_SIZE_X;
     uint base_y  = block_y * BLOCK_SIZE_Y;
 
-    if (pixelInBlock < 16)
+    if (valid_block && pixelInBlock < 16)
     {
         uint px = min(base_x + pixelInBlock % 4, mip_width - 1);
         uint py = min(base_y + pixelInBlock / 4, mip_height - 1);
@@ -89,7 +88,7 @@ void main_cs(uint GI : SV_GroupIndex, uint3 groupID : SV_GroupID)
 
     GroupMemoryBarrierWithGroupSync();
 
-    if (pixelInBlock == 0)
+    if (valid_block && pixelInBlock == 0)
     {
         float3 blockRGB[16];
         for (int i = 0; i < 16; i++)
