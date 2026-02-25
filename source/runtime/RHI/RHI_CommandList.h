@@ -146,6 +146,9 @@ namespace spartan
         void BeginMarker(const char* name);
         void EndMarker();
 
+        // gpu breadcrumbs - writes a uint32 value into a slot of the breadcrumb buffer on the gpu timeline
+        void WriteGpuBreadcrumb(RHI_Buffer* buffer, uint32_t slot, uint32_t value);
+
         // timestamp queries
         uint32_t BeginTimestamp();
         void EndTimestamp();
@@ -223,6 +226,7 @@ namespace spartan
         bool m_render_pass_active                            = false;
         std::stack<const char*> m_active_timeblocks;
         std::stack<const char*> m_debug_label_stack;
+        std::stack<int32_t> m_breadcrumb_gpu_slots;
         std::mutex m_mutex_reset;
         RHI_PipelineState m_pso;
         std::vector<PendingBarrierInfo> m_pending_barriers;

@@ -1803,6 +1803,18 @@ namespace spartan
         if (Debugging::IsBreadcrumbsEnabled())
         {
             Breadcrumbs::BeginMarker(name);
+
+            int32_t gpu_slot = Breadcrumbs::GpuMarkerBegin(name);
+            if (gpu_slot >= 0)
+            {
+                m_breadcrumb_gpu_slots.push(gpu_slot);
+
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                if (buffer)
+                {
+                    WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), static_cast<uint32_t>(gpu_slot + 1));
+                }
+            }
         }
     }
 
@@ -1816,7 +1828,33 @@ namespace spartan
         if (Debugging::IsBreadcrumbsEnabled())
         {
             Breadcrumbs::EndMarker();
+
+            if (!m_breadcrumb_gpu_slots.empty())
+            {
+                int32_t gpu_slot = m_breadcrumb_gpu_slots.top();
+                m_breadcrumb_gpu_slots.pop();
+
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                if (buffer && gpu_slot >= 0)
+                {
+                    WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), Breadcrumbs::gpu_marker_completed);
+                }
+            }
         }
+    }
+
+    void RHI_CommandList::WriteGpuBreadcrumb(RHI_Buffer* buffer, uint32_t slot, uint32_t value)
+    {
+        SP_ASSERT(buffer && buffer->GetRhiResource());
+        SP_ASSERT(m_state == RHI_CommandListState::Recording);
+
+        vkCmdFillBuffer(
+            static_cast<VkCommandBuffer>(m_rhi_resource),
+            static_cast<VkBuffer>(buffer->GetRhiResource()),
+            static_cast<VkDeviceSize>(slot * sizeof(uint32_t)),
+            sizeof(uint32_t),
+            value
+        );
     }
     
     uint32_t RHI_CommandList::BeginTimestamp()
@@ -1969,6 +2007,24 @@ namespace spartan
             RHI_Device::MarkerBegin(this, name, Vector4::Zero);
             m_debug_label_stack.push(name);
         }
+
+        // gpu breadcrumbs
+        if (Debugging::IsBreadcrumbsEnabled())
+        {
+            Breadcrumbs::BeginMarker(name);
+
+            int32_t gpu_slot = Breadcrumbs::GpuMarkerBegin(name);
+            if (gpu_slot >= 0)
+            {
+                m_breadcrumb_gpu_slots.push(gpu_slot);
+
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                if (buffer)
+                {
+                    WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), static_cast<uint32_t>(gpu_slot + 1));
+                }
+            }
+        }
     
         // track active time blocks (for nesting)
         m_active_timeblocks.push(name);
@@ -1983,6 +2039,24 @@ namespace spartan
         {
             RHI_Device::MarkerEnd(this);
             m_debug_label_stack.pop();
+        }
+
+        // gpu breadcrumbs
+        if (Debugging::IsBreadcrumbsEnabled())
+        {
+            Breadcrumbs::EndMarker();
+
+            if (!m_breadcrumb_gpu_slots.empty())
+            {
+                int32_t gpu_slot = m_breadcrumb_gpu_slots.top();
+                m_breadcrumb_gpu_slots.pop();
+
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                if (buffer && gpu_slot >= 0)
+                {
+                    WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), Breadcrumbs::gpu_marker_completed);
+                }
+            }
         }
     
         // timing

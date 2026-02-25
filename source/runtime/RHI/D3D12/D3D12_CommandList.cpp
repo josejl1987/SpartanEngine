@@ -33,6 +33,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../RHI_DescriptorSetLayout.h"
 #include "../../Profiling/Profiler.h"
 #include "../../Rendering/Renderer.h"
+#include "../../Core/Debugging.h"
+#include "../../Core/Breadcrumbs.h"
 //====================================
 
 //= NAMESPACES ===============
@@ -605,22 +607,104 @@ namespace spartan
 
     void RHI_CommandList::BeginTimeblock(const char* name, const bool gpu_marker, const bool gpu_timing)
     {
-        // d3d12 marker/timing implementation would go here
+        if (Debugging::IsBreadcrumbsEnabled())
+        {
+            Breadcrumbs::BeginMarker(name);
+
+            int32_t gpu_slot = Breadcrumbs::GpuMarkerBegin(name);
+            if (gpu_slot >= 0)
+            {
+                m_breadcrumb_gpu_slots.push(gpu_slot);
+
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                if (buffer)
+                {
+                    WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), static_cast<uint32_t>(gpu_slot + 1));
+                }
+            }
+        }
     }
 
     void RHI_CommandList::EndTimeblock()
     {
-        // end of timeblock
+        if (Debugging::IsBreadcrumbsEnabled())
+        {
+            Breadcrumbs::EndMarker();
+
+            if (!m_breadcrumb_gpu_slots.empty())
+            {
+                int32_t gpu_slot = m_breadcrumb_gpu_slots.top();
+                m_breadcrumb_gpu_slots.pop();
+
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                if (buffer && gpu_slot >= 0)
+                {
+                    WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), Breadcrumbs::gpu_marker_completed);
+                }
+            }
+        }
     }
 
     void RHI_CommandList::BeginMarker(const char* name)
     {
-        // todo: implement pix markers
+        if (Debugging::IsBreadcrumbsEnabled())
+        {
+            Breadcrumbs::BeginMarker(name);
+
+            int32_t gpu_slot = Breadcrumbs::GpuMarkerBegin(name);
+            if (gpu_slot >= 0)
+            {
+                m_breadcrumb_gpu_slots.push(gpu_slot);
+
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                if (buffer)
+                {
+                    WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), static_cast<uint32_t>(gpu_slot + 1));
+                }
+            }
+        }
     }
 
     void RHI_CommandList::EndMarker()
     {
-        // todo: implement pix markers
+        if (Debugging::IsBreadcrumbsEnabled())
+        {
+            Breadcrumbs::EndMarker();
+
+            if (!m_breadcrumb_gpu_slots.empty())
+            {
+                int32_t gpu_slot = m_breadcrumb_gpu_slots.top();
+                m_breadcrumb_gpu_slots.pop();
+
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                if (buffer && gpu_slot >= 0)
+                {
+                    WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), Breadcrumbs::gpu_marker_completed);
+                }
+            }
+        }
+    }
+
+    void RHI_CommandList::WriteGpuBreadcrumb(RHI_Buffer* buffer, uint32_t slot, uint32_t value)
+    {
+        SP_ASSERT(buffer && buffer->GetRhiResource());
+        SP_ASSERT(m_state == RHI_CommandListState::Recording);
+
+        ID3D12GraphicsCommandList* cmd_list = static_cast<ID3D12GraphicsCommandList*>(m_rhi_resource);
+        ID3D12Resource* resource            = static_cast<ID3D12Resource*>(buffer->GetRhiResource());
+
+        // query for the extended command list interface that supports WriteBufferImmediate
+        ID3D12GraphicsCommandList2* cmd_list2 = nullptr;
+        if (SUCCEEDED(cmd_list->QueryInterface(IID_PPV_ARGS(&cmd_list2))))
+        {
+            D3D12_WRITEBUFFERIMMEDIATE_PARAMETER param = {};
+            param.Dest  = resource->GetGPUVirtualAddress() + slot * sizeof(uint32_t);
+            param.Value = value;
+
+            D3D12_WRITEBUFFERIMMEDIATE_MODE mode = D3D12_WRITEBUFFERIMMEDIATE_MODE_DEFAULT;
+            cmd_list2->WriteBufferImmediate(1, &param, &mode);
+            cmd_list2->Release();
+        }
     }
 
     void RHI_CommandList::UpdateBuffer(RHI_Buffer* buffer, const uint64_t offset, const uint64_t size, const void* data)
