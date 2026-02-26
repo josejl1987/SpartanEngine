@@ -427,12 +427,22 @@ namespace spartan
                     if (m_draw_data_count > 0)
                     {
                         RHI_Buffer* buffer = GetBuffer(Renderer_Buffer::DrawData);
-                        buffer->ResetOffset();
-                        buffer->Update(m_cmd_list_present, &m_draw_data_cpu[0], buffer->GetStride() * m_draw_data_count);
+                        uint32_t frame_byte_offset = m_frame_resource_index * renderer_max_draw_calls * static_cast<uint32_t>(sizeof(Sb_DrawData));
+                        uint32_t upload_size       = static_cast<uint32_t>(sizeof(Sb_DrawData)) * m_draw_data_count;
+                        m_cmd_list_present->UpdateBuffer(buffer, frame_byte_offset, upload_size, &m_draw_data_cpu[0]);
                     }
 
-                    // descriptor must follow the rotated buffer
-                    RHI_Device::UpdateBindlessDrawData(GetBuffer(Renderer_Buffer::DrawData));
+                    // the descriptor points to a single large buffer that holds all frames' draw data
+                    // at different offsets, so it only needs to be set once; this eliminates the race
+                    // where vkUpdateDescriptorSets (host-side, instantly visible under UPDATE_AFTER_BIND)
+                    // would change the buffer pointer while the previous frame's phase 3 transparent pass
+                    // was still reading from it on the gpu
+                    static bool draw_data_descriptor_set = false;
+                    if (!draw_data_descriptor_set)
+                    {
+                        RHI_Device::UpdateBindlessDrawData(GetBuffer(Renderer_Buffer::DrawData));
+                        draw_data_descriptor_set = true;
+                    }
                 }
 
                 // indirect draw buffers
@@ -817,15 +827,18 @@ namespace spartan
         entry.aabb_index         = 0;
         entry.padding            = 0;
 
-        // write directly to the mapped gpu buffer
+        // the draw data buffer is a single large allocation partitioned into per-frame regions;
+        // each frame writes to its own region so there is no write-after-read race with the gpu
+        uint32_t global_index = m_frame_resource_index * renderer_max_draw_calls + index;
+
         RHI_Buffer* buffer = GetBuffer(Renderer_Buffer::DrawData);
         if (void* mapped = buffer->GetMappedData())
         {
-            void* dst = static_cast<char*>(mapped) + index * sizeof(Sb_DrawData);
+            void* dst = static_cast<char*>(mapped) + global_index * sizeof(Sb_DrawData);
             memcpy(dst, &entry, sizeof(Sb_DrawData));
         }
 
-        return index;
+        return global_index;
     }
 
     void Renderer::UpdateMaterials(RHI_CommandList* cmd_list)

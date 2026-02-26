@@ -85,17 +85,20 @@ namespace spartan
         buffer(Renderer_Buffer::DummyInstance)      = make_shared<RHI_Buffer>(RHI_Buffer_Type::Instance, sizeof(Instance),                           static_cast<uint32_t>(identity.size()), &identity,          true, "dummy_instance_buffer");
         buffer(Renderer_Buffer::GeometryInfo)       = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage,  static_cast<uint32_t>(sizeof(Sb_GeometryInfo)), rhi_max_array_size,                     nullptr,            true, "geometry_info");
 
+        // single draw data buffer large enough for all frames; each frame writes to its own
+        // offset region so the bindless descriptor never changes, eliminating the race where
+        // vkUpdateDescriptorSets would be visible to in-flight gpu reads under UPDATE_AFTER_BIND
+        buffer(Renderer_Buffer::DrawData) = make_shared<RHI_Buffer>(
+            RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),
+            renderer_max_draw_calls * renderer_draw_data_buffer_count, nullptr, true,
+            "draw_data"
+        );
+
         // per-frame rotated buffers
         uint32_t draw_count_init = 0;
         for (uint32_t i = 0; i < renderer_draw_data_buffer_count; i++)
         {
             FrameResource& fr = m_frame_resources[i];
-
-            fr.draw_data = make_shared<RHI_Buffer>(
-                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),
-                renderer_max_draw_calls, nullptr, true,
-                (string("draw_data_") + to_string(i)).c_str()
-            );
 
             fr.indirect_draw_args = make_shared<RHI_Buffer>(
                 RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_IndirectDrawArgs)),
@@ -136,7 +139,6 @@ namespace spartan
 
         // point the active buffer slots at frame 0
         const FrameResource& fr = m_frame_resources[0];
-        buffer(Renderer_Buffer::DrawData)            = fr.draw_data;
         buffer(Renderer_Buffer::IndirectDrawArgs)    = fr.indirect_draw_args;
         buffer(Renderer_Buffer::IndirectDrawData)    = fr.indirect_draw_data;
         buffer(Renderer_Buffer::IndirectDrawArgsOut) = fr.indirect_draw_args_out;
@@ -967,7 +969,6 @@ namespace spartan
         m_frame_resource_index = (m_frame_resource_index + 1) % renderer_draw_data_buffer_count;
         const FrameResource& fr = m_frame_resources[m_frame_resource_index];
 
-        buffers[static_cast<uint8_t>(Renderer_Buffer::DrawData)]            = fr.draw_data;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawArgs)]    = fr.indirect_draw_args;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawData)]    = fr.indirect_draw_data;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawArgsOut)] = fr.indirect_draw_args_out;

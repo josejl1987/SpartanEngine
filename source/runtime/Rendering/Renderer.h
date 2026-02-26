@@ -277,7 +277,6 @@ namespace spartan
         // per-frame gpu buffers, rotated so in-flight frames never race
         struct FrameResource
         {
-            std::shared_ptr<RHI_Buffer> draw_data;
             std::shared_ptr<RHI_Buffer> indirect_draw_args;
             std::shared_ptr<RHI_Buffer> indirect_draw_data;
             std::shared_ptr<RHI_Buffer> indirect_draw_args_out;
