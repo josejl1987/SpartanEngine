@@ -25,9 +25,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //=================================
 
 #ifdef INDIRECT_DRAW
-gbuffer_vertex main_vs(Vertex_PosUvNorTan input, uint instance_id : SV_InstanceID, [[vk::builtin("DrawIndex")]] uint draw_id : DRAW_INDEX)
+gbuffer_vertex main_vs(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID, [[vk::builtin("DrawIndex")]] uint draw_id : DRAW_INDEX)
 {
     _draw = indirect_draw_data_out[draw_id];
+    Vertex_PosUvNorTan input = pull_vertex(vertex_id);
 #else
 gbuffer_vertex main_vs(Vertex_PosUvNorTan input, uint instance_id : SV_InstanceID)
 {

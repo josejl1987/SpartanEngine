@@ -664,19 +664,19 @@ namespace spartan
         shader(Renderer_Shader::indirect_cull_c) = make_shared<RHI_Shader>();
         shader(Renderer_Shader::indirect_cull_c)->Compile(RHI_Shader_Type::Compute, shader_dir + "indirect_cull.hlsl", async);
 
-        // indirect draw g-buffer variants (vertex shader uses draw_id instead of push constants)
+        // indirect draw g-buffer variants (vertex pulling, no input assembly)
         shader(Renderer_Shader::gbuffer_indirect_v) = make_shared<RHI_Shader>();
         shader(Renderer_Shader::gbuffer_indirect_v)->AddDefine("INDIRECT_DRAW");
-        shader(Renderer_Shader::gbuffer_indirect_v)->Compile(RHI_Shader_Type::Vertex, shader_dir + "g_buffer.hlsl", async, RHI_Vertex_Type::PosUvNorTan);
+        shader(Renderer_Shader::gbuffer_indirect_v)->Compile(RHI_Shader_Type::Vertex, shader_dir + "g_buffer.hlsl", async, RHI_Vertex_Type::Max);
 
         shader(Renderer_Shader::gbuffer_indirect_p) = make_shared<RHI_Shader>();
         shader(Renderer_Shader::gbuffer_indirect_p)->AddDefine("INDIRECT_DRAW");
         shader(Renderer_Shader::gbuffer_indirect_p)->Compile(RHI_Shader_Type::Pixel, shader_dir + "g_buffer.hlsl", async);
 
-        // indirect draw depth prepass variant
+        // indirect draw depth prepass variant (vertex pulling, no input assembly)
         shader(Renderer_Shader::depth_prepass_indirect_v) = make_shared<RHI_Shader>();
         shader(Renderer_Shader::depth_prepass_indirect_v)->AddDefine("INDIRECT_DRAW");
-        shader(Renderer_Shader::depth_prepass_indirect_v)->Compile(RHI_Shader_Type::Vertex, shader_dir + "depth_prepass.hlsl", async, RHI_Vertex_Type::PosUvNorTan);
+        shader(Renderer_Shader::depth_prepass_indirect_v)->Compile(RHI_Shader_Type::Vertex, shader_dir + "depth_prepass.hlsl", async, RHI_Vertex_Type::Max);
 
         // icon
         shader(Renderer_Shader::icon_c) = make_shared<RHI_Shader>();

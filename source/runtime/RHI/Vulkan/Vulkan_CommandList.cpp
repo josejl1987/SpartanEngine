@@ -1848,8 +1848,31 @@ namespace spartan
         SP_ASSERT(buffer && buffer->GetRhiResource());
         SP_ASSERT(m_state == RHI_CommandListState::Recording);
 
+        // vkCmdFillBuffer is a transfer op and cannot be issued inside a render pass
+        if (m_render_pass_active)
+        {
+            RenderPassEnd();
+        }
+
+        VkCommandBuffer cmd = static_cast<VkCommandBuffer>(m_rhi_resource);
+
+        // synchronize with any prior breadcrumb fill to avoid write-after-write hazards
+        VkMemoryBarrier2 barrier = {};
+        barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        barrier.srcStageMask  = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask  = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+
+        VkDependencyInfo dep    = {};
+        dep.sType               = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.memoryBarrierCount  = 1;
+        dep.pMemoryBarriers     = &barrier;
+
+        vkCmdPipelineBarrier2(cmd, &dep);
+
         vkCmdFillBuffer(
-            static_cast<VkCommandBuffer>(m_rhi_resource),
+            cmd,
             static_cast<VkBuffer>(buffer->GetRhiResource()),
             static_cast<VkDeviceSize>(slot * sizeof(uint32_t)),
             sizeof(uint32_t),

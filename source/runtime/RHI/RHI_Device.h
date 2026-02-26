@@ -56,6 +56,9 @@ namespace spartan
         static void UpdateBindlessSamplers(const std::array<std::shared_ptr<RHI_Sampler>, static_cast<uint32_t>(Renderer_Sampler::Max)>* samplers);
         static void UpdateBindlessAABBs(RHI_Buffer* buffer);
         static void UpdateBindlessDrawData(RHI_Buffer* buffer);
+        static void UpdateBindlessGeometryVertices(RHI_Buffer* buffer);
+        static void UpdateBindlessGeometryIndices(RHI_Buffer* buffer);
+        static void UpdateBindlessInstances(RHI_Buffer* buffer);
 
         // pipelines
         static void GetOrCreatePipeline(RHI_PipelineState& pso, RHI_Pipeline*& pipeline, RHI_DescriptorSetLayout*& descriptor_set_layout);

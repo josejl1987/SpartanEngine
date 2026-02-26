@@ -451,6 +451,35 @@ namespace spartan
                     }
                 }
 
+                // geometry buffers (vertex pulling via bindless structured buffers)
+                {
+                    static RHI_Buffer* last_vertex_buffer = nullptr;
+                    RHI_Buffer* current_vertex = GeometryBuffer::GetVertexBuffer();
+                    if (current_vertex && current_vertex != last_vertex_buffer)
+                    {
+                        RHI_Device::UpdateBindlessGeometryVertices(current_vertex);
+                        last_vertex_buffer = current_vertex;
+                    }
+
+                    static RHI_Buffer* last_index_buffer = nullptr;
+                    RHI_Buffer* current_index = GeometryBuffer::GetIndexBuffer();
+                    if (current_index && current_index != last_index_buffer)
+                    {
+                        RHI_Device::UpdateBindlessGeometryIndices(current_index);
+                        last_index_buffer = current_index;
+                    }
+                }
+
+                // dummy instance buffer (vertex pulling identity instances)
+                {
+                    static bool instances_descriptor_set = false;
+                    if (!instances_descriptor_set)
+                    {
+                        RHI_Device::UpdateBindlessInstances(GetBuffer(Renderer_Buffer::DummyInstance));
+                        instances_descriptor_set = true;
+                    }
+                }
+
                 // indirect draw buffers
                 if (m_indirect_draw_count > 0)
                 {
@@ -1417,13 +1446,9 @@ namespace spartan
 
                         instances.push_back(instance);
 
-                        Sb_GeometryInfo geo_info       = {};
-                        geo_info.vertex_buffer_address = vertex_buffer->GetDeviceAddress();
-                        geo_info.index_buffer_address  = index_buffer->GetDeviceAddress();
-                        geo_info.vertex_offset         = renderable->GetVertexOffset(0);
-                        geo_info.index_offset          = renderable->GetIndexOffset(0);
-                        geo_info.vertex_count          = renderable->GetVertexCount(0);
-                        geo_info.index_count           = renderable->GetIndexCount(0);
+                        Sb_GeometryInfo geo_info = {};
+                        geo_info.vertex_offset  = renderable->GetVertexOffset(0);
+                        geo_info.index_offset   = renderable->GetIndexOffset(0);
                         geometry_infos.push_back(geo_info);
                     }
                 }

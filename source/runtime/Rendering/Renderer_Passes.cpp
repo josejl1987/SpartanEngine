@@ -509,7 +509,6 @@ namespace spartan
                 pso.clear_depth                      = 0.0f;
                 cmd_list->SetPipelineState(pso);
 
-                cmd_list->SetBufferVertex(GeometryBuffer::GetVertexBuffer(), GetBuffer(Renderer_Buffer::DummyInstance));
                 cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
                 cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
                 cmd_list->SetCullMode(RHI_CullMode::Back);
@@ -639,7 +638,6 @@ namespace spartan
                 pso.clear_color[3]                   = Color::standard_transparent;
                 cmd_list->SetPipelineState(pso);
 
-                cmd_list->SetBufferVertex(GeometryBuffer::GetVertexBuffer(), GetBuffer(Renderer_Buffer::DummyInstance));
                 cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
                 cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
                 cmd_list->SetCullMode(RHI_CullMode::Back);

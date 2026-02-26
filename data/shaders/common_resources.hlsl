@@ -193,28 +193,14 @@ Texture2D<float4> tex_reservoir_prev2 : register(t24);
 Texture2D<float4> tex_reservoir_prev3 : register(t25);
 Texture2D<float4> tex_reservoir_prev4 : register(t26);
 
-// ray tracing geometry info for vertex buffer access (indexed by InstanceIndex())
-// matches c++ Sb_GeometryInfo struct
+// per-blas-instance offsets into the global geometry buffer (indexed by InstanceIndex() in rt shaders)
 struct GeometryInfo
 {
-    uint2 vertex_buffer_address; // uint64_t split into two uint32_t (low, high)
-    uint2 index_buffer_address;  // uint64_t split into two uint32_t (low, high)
     uint vertex_offset;
     uint index_offset;
-    uint vertex_count;
-    uint index_count;
 };
 
-// vertex structure matching c++ RHI_Vertex_PosTexNorTan (44 bytes)
-struct RtVertex
-{
-    float3 position;  // 12 bytes
-    float2 texcoord;  // 8 bytes  
-    float3 normal;    // 12 bytes
-    float3 tangent;   // 12 bytes
-};
-
-// ray tracing geometry info buffer
+// geometry info buffer for ray tracing (per-blas-instance offsets)
 RWStructuredBuffer<GeometryInfo> geometry_infos : register(u20);
 
 // restir reservoir uav bindings
@@ -273,6 +259,27 @@ struct DrawData
 
 // bindless draw data - per-draw transforms, material indices, etc.
 StructuredBuffer<DrawData> draw_data                     : register(t19, space5);
+
+// vertex pulling - global geometry buffer exposed as a structured buffer
+struct PulledVertex
+{
+    float3 position;
+    float2 uv;
+    float3 normal;
+    float3 tangent;
+};
+
+// vertex pulling - instance buffer exposed as packed uint data (10 bytes per instance)
+struct PackedInstance
+{
+    uint pos_xy;     // position_x (half16) | position_y (half16)
+    uint pos_z_norm; // position_z (half16) | normal_oct (uint16)
+    uint yaw_scale;  // yaw_packed (uint8) | scale_packed (uint8) | padding (uint16)
+};
+
+StructuredBuffer<PulledVertex> geometry_vertices         : register(t20, space8);
+StructuredBuffer<uint> geometry_indices                  : register(t22, space9);
+StructuredBuffer<PackedInstance> geometry_instances       : register(t23, space10);
 
 // gpu-driven indirect drawing uav bindings
 // input: populated by cpu, read by the cull compute shader
