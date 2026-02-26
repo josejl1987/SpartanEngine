@@ -419,7 +419,13 @@ namespace spartan
                 // aabbs (always, they change with entity transforms)
                 {
                     UpdateBoundingBoxes(m_cmd_list_present);
-                    RHI_Device::UpdateBindlessAABBs(GetBuffer(Renderer_Buffer::AABBs));
+
+                    static bool aabbs_descriptor_set = false;
+                    if (!aabbs_descriptor_set)
+                    {
+                        RHI_Device::UpdateBindlessAABBs(GetBuffer(Renderer_Buffer::AABBs));
+                        aabbs_descriptor_set = true;
+                    }
                 }
 
                 // draw data
@@ -1111,11 +1117,15 @@ namespace spartan
             }
         }
 
-        // gpu upload
+        // gpu upload to the current frame's region within the shared aabb buffer
         uint32_t total_aabb_count = m_draw_calls_prepass_count + m_indirect_draw_count;
-        RHI_Buffer* buffer = GetBuffer(Renderer_Buffer::AABBs);
-        buffer->ResetOffset();
-        buffer->Update(cmd_list, &m_bindless_aabbs[0], buffer->GetStride() * total_aabb_count);
+        if (total_aabb_count > 0)
+        {
+            RHI_Buffer* buffer         = GetBuffer(Renderer_Buffer::AABBs);
+            uint32_t frame_byte_offset = m_frame_resource_index * rhi_max_array_size * static_cast<uint32_t>(sizeof(Sb_Aabb));
+            uint32_t upload_size       = static_cast<uint32_t>(sizeof(Sb_Aabb)) * total_aabb_count;
+            cmd_list->UpdateBuffer(buffer, frame_byte_offset, upload_size, &m_bindless_aabbs[0]);
+        }
     }
 
     void Renderer::UpdateDrawCalls(RHI_CommandList* cmd_list)
@@ -1240,14 +1250,15 @@ namespace spartan
                 args.vertex_offset        = static_cast<int32_t>(renderable->GetVertexOffset(dc.lod_index));
                 args.first_instance       = dc.instance_index;
 
-                // per-draw data (aabb_index sits after prepass aabbs)
+                // per-draw data (aabb_index includes the frame offset into the shared aabb buffer)
+                uint32_t aabb_frame_offset = m_frame_resource_index * rhi_max_array_size;
                 Sb_DrawData& data       = m_indirect_draw_data[idx];
                 Entity* entity          = renderable->GetEntity();
                 data.transform          = entity->GetMatrix();
                 data.transform_previous = entity->GetMatrixPrevious();
                 data.material_index     = material->GetIndex();
                 data.is_transparent     = 0;
-                data.aabb_index         = m_draw_calls_prepass_count + idx;
+                data.aabb_index         = aabb_frame_offset + m_draw_calls_prepass_count + idx;
                 data.padding            = 0;
             }
         }

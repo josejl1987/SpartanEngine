@@ -282,7 +282,6 @@ namespace spartan
             std::shared_ptr<RHI_Buffer> indirect_draw_args_out;
             std::shared_ptr<RHI_Buffer> indirect_draw_data_out;
             std::shared_ptr<RHI_Buffer> indirect_draw_count;
-            std::shared_ptr<RHI_Buffer> aabbs;
         };
         static std::array<FrameResource, renderer_draw_data_buffer_count> m_frame_resources;
         static uint32_t m_frame_resource_index;

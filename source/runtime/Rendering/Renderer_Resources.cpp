@@ -85,13 +85,19 @@ namespace spartan
         buffer(Renderer_Buffer::DummyInstance)      = make_shared<RHI_Buffer>(RHI_Buffer_Type::Instance, sizeof(Instance),                           static_cast<uint32_t>(identity.size()), &identity,          true, "dummy_instance_buffer");
         buffer(Renderer_Buffer::GeometryInfo)       = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage,  static_cast<uint32_t>(sizeof(Sb_GeometryInfo)), rhi_max_array_size,                     nullptr,            true, "geometry_info");
 
-        // single draw data buffer large enough for all frames; each frame writes to its own
-        // offset region so the bindless descriptor never changes, eliminating the race where
-        // vkUpdateDescriptorSets would be visible to in-flight gpu reads under UPDATE_AFTER_BIND
+        // single draw data and aabb buffers large enough for all frames; each frame writes to its
+        // own offset region so the bindless descriptors never change, eliminating the race where
+        // vkUpdateDescriptorSets (host-side, instantly visible under UPDATE_AFTER_BIND) would
+        // change the buffer pointer while in-flight gpu commands were still reading from it
         buffer(Renderer_Buffer::DrawData) = make_shared<RHI_Buffer>(
             RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),
             renderer_max_draw_calls * renderer_draw_data_buffer_count, nullptr, true,
             "draw_data"
+        );
+        buffer(Renderer_Buffer::AABBs) = make_shared<RHI_Buffer>(
+            RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_Aabb)),
+            rhi_max_array_size * renderer_draw_data_buffer_count, nullptr, true,
+            "aabbs"
         );
 
         // per-frame rotated buffers
@@ -129,12 +135,6 @@ namespace spartan
                 1, &draw_count_init, true,
                 (string("indirect_draw_count_") + to_string(i)).c_str()
             );
-
-            fr.aabbs = make_shared<RHI_Buffer>(
-                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_Aabb)),
-                rhi_max_array_size, nullptr, true,
-                (string("aabbs_") + to_string(i)).c_str()
-            );
         }
 
         // point the active buffer slots at frame 0
@@ -144,7 +144,6 @@ namespace spartan
         buffer(Renderer_Buffer::IndirectDrawArgsOut) = fr.indirect_draw_args_out;
         buffer(Renderer_Buffer::IndirectDrawDataOut) = fr.indirect_draw_data_out;
         buffer(Renderer_Buffer::IndirectDrawCount)   = fr.indirect_draw_count;
-        buffer(Renderer_Buffer::AABBs)               = fr.aabbs;
 
         // particle buffers
         const uint32_t particle_max = 100000;
@@ -974,7 +973,6 @@ namespace spartan
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawArgsOut)] = fr.indirect_draw_args_out;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawDataOut)] = fr.indirect_draw_data_out;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawCount)]   = fr.indirect_draw_count;
-        buffers[static_cast<uint8_t>(Renderer_Buffer::AABBs)]              = fr.aabbs;
     }
 
     RHI_Texture* Renderer::GetStandardTexture(const Renderer_StandardTexture type)
