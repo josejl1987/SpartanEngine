@@ -37,6 +37,9 @@ SP_WARNINGS_OFF
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
 #include <SDL3/SDL_vulkan.h>
+#ifdef __linux__
+#include <sys/stat.h>
+#endif
 SP_WARNINGS_ON
 //=====================================
 

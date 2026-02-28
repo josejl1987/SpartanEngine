@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cwchar>
 #include <cstdarg>
+#include <cstdlib>  // for getenv, setenv, strdup
+#include <cerrno>   // for errno, EINVAL
 
 // Types
 typedef int errno_t;
@@ -79,6 +81,29 @@ inline errno_t fopen_s(FILE** pFile, const char* filename, const char* mode) {
     }
     *pFile = fopen(filename, mode);
     return (*pFile != nullptr) ? 0 : errno;
+}
+
+inline errno_t _dupenv_s(char** buffer, size_t* numberOfElements, const char* varname) {
+    if (!buffer || !varname) {
+        if (buffer) *buffer = nullptr;
+        if (numberOfElements) *numberOfElements = 0;
+        return EINVAL;
+    }
+
+    const char* env = getenv(varname);
+    if (env) {
+        *buffer = strdup(env);  // Allocate copy so caller can free()
+        if (numberOfElements) *numberOfElements = strlen(env) + 1;
+        return 0;
+    }
+
+    *buffer = nullptr;
+    if (numberOfElements) *numberOfElements = 0;
+    return 0;
+}
+
+inline errno_t _putenv_s(const char* varname, const char* value_string) {
+    return setenv(varname, value_string, 1) ? errno : 0;
 }
 
 // Template overloads for fixed-size arrays (MSVC compatibility)
