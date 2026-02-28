@@ -324,6 +324,9 @@ namespace spartan
         DrawData,
         SamplersComparison,
         SamplersRegular,
+        GeometryVertices,
+        GeometryIndices,
+        Instances,
         Max
     };
 

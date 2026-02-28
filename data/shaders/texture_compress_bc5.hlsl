@@ -19,9 +19,10 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 
-// gpu bc3 texture compression using amd compressonator kernels
-// each 64-thread group compresses 4 bc blocks (4x4 pixels each)
-// input is a flat buffer of packed rgba8 pixels (all mips concatenated)
+// gpu bc5 texture compression using amd compressonator kernels
+// bc5 encodes two independent channels (r and g) into 16 bytes per 4x4 block
+// used for normal maps where only xy are needed (z is reconstructed)
+// each 64-thread group compresses 4 bc blocks
 
 #ifndef ASPM_HLSL
 #define ASPM_HLSL
@@ -30,14 +31,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "compressonator/bcn_common_kernel.h"
 #include "common_resources.hlsl"
 
-// compression parameters packed into the push constant values:
-// values[0].x = num_block_x       (uint via asuint)
-// values[0].y = num_total_blocks  (uint via asuint)
-// values[0].z = quality           (float)
-// values[0].w = input_mip_offset  (uint via asuint) - pixel offset into input buffer
-// values[1].x = output_offset     (uint via asuint) - block offset into output buffer
-// values[1].y = mip_width         (uint via asuint) - width of this mip in pixels
-// values[1].z = mip_height        (uint via asuint) - height of this mip in pixels
 uint  get_num_block_x()      { return asuint(buffer_pass.values[0].x); }
 uint  get_num_total_blocks() { return asuint(buffer_pass.values[0].y); }
 float get_quality()          { return buffer_pass.values[0].z; }
@@ -80,9 +73,6 @@ void main_cs(uint GI : SV_GroupIndex, uint3 groupID : SV_GroupID)
     uint pixelBase    = blockInGroup * MAX_USED_THREAD;
     uint pixelInBlock = GI - pixelBase;
 
-    // every thread must reach the group barrier below, so we guard work
-    // with a validity flag instead of returning early (avoids deadlock on
-    // gpus with wave sizes smaller than the group size, e.g. wave32)
     bool valid_block = (blockID < num_total_blocks);
 
     uint block_y = blockID / num_block_x;
@@ -90,7 +80,6 @@ void main_cs(uint GI : SV_GroupIndex, uint3 groupID : SV_GroupID)
     uint base_x  = block_x * BLOCK_SIZE_X;
     uint base_y  = block_y * BLOCK_SIZE_Y;
 
-    // load 4x4 pixel block from the flat input buffer, clamping to mip edges
     if (valid_block && pixelInBlock < 16)
     {
         uint px = min(base_x + pixelInBlock % 4, mip_width - 1);
@@ -100,19 +89,16 @@ void main_cs(uint GI : SV_GroupIndex, uint3 groupID : SV_GroupID)
 
     GroupMemoryBarrierWithGroupSync();
 
-    // thread 0 of each block compresses and writes the result
     if (valid_block && pixelInBlock == 0)
     {
-        float3 blockRGB[16];
-        float  blockA[16];
+        float blockU[16]; // red channel
+        float blockV[16]; // green channel
         for (int i = 0; i < 16; i++)
         {
-            blockRGB[i].x = shared_temp[pixelBase + i].x;
-            blockRGB[i].y = shared_temp[pixelBase + i].y;
-            blockRGB[i].z = shared_temp[pixelBase + i].z;
-            blockA[i]     = shared_temp[pixelBase + i].w;
+            blockU[i] = shared_temp[pixelBase + i].x;
+            blockV[i] = shared_temp[pixelBase + i].y;
         }
 
-        tex_compress_out[get_output_offset() + blockID] = CompressBlockBC3_UNORM(blockRGB, blockA, get_quality(), false);
+        tex_compress_out[get_output_offset() + blockID] = CompressBlockBC5_UNORM(blockU, blockV, get_quality());
     }
 }

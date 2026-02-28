@@ -30,7 +30,13 @@ gbuffer_vertex main_vs(Vertex_PosUvNorTan input, uint instance_id : SV_InstanceI
     float3 f3_value_2 = pass_get_f3_value2();
     uint index_light  = (uint)f3_value_2.x;
     uint index_array  = (uint)f3_value_2.y;
-    
+
+    // validate light index to prevent out-of-bounds buffer access
+    uint light_count, light_stride;
+    light_parameters.GetDimensions(light_count, light_stride);
+    if (index_light >= light_count || index_array >= 6)
+        return (gbuffer_vertex)0;
+
     Light light;
     Surface surface;
     light.Build(index_light, surface);

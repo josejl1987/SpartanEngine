@@ -488,13 +488,14 @@ namespace spartan
 
     namespace immediate_execution
     {
-        mutex mutex_execution;
-        condition_variable condition_var;
-        bool is_executing = false;
-        array<shared_ptr<RHI_Queue>, static_cast<uint32_t>(RHI_Queue_Type::Max)> queues; // graphics, compute, and copy
+        static const uint32_t queue_type_count = static_cast<uint32_t>(RHI_Queue_Type::Max);
+
+        array<mutex, queue_type_count> mutexes;
+        array<condition_variable, queue_type_count> condition_vars;
+        array<bool, queue_type_count> is_executing = { false, false, false };
+        array<shared_ptr<RHI_Queue>, queue_type_count> queues;
         once_flag init_flag;
-    
-        // initialize queues on first use
+
         void ensure_initialized()
         {
             call_once(init_flag, []()
@@ -738,37 +739,42 @@ namespace spartan
 
     RHI_CommandList* RHI_CommandList::ImmediateExecutionBegin(const RHI_Queue_Type queue_type)
     {
+        if (RHI_Device::IsDeviceLost())
+            return nullptr;
+
         immediate_execution::ensure_initialized();
-    
-        // wait until it's safe to proceed
-        unique_lock<mutex> lock(immediate_execution::mutex_execution);
-        immediate_execution::condition_var.wait(lock, [] { return !immediate_execution::is_executing; });
-        immediate_execution::is_executing = true;
-    
-        // get command list
-        RHI_Queue* queue          = immediate_execution::queues[static_cast<uint32_t>(queue_type)].get();
+
+        uint32_t qi = static_cast<uint32_t>(queue_type);
+
+        // per-queue lock so different queue types can execute concurrently
+        unique_lock<mutex> lock(immediate_execution::mutexes[qi]);
+        immediate_execution::condition_vars[qi].wait(lock, [qi] { return !immediate_execution::is_executing[qi]; });
+        immediate_execution::is_executing[qi] = true;
+
+        RHI_Queue* queue          = immediate_execution::queues[qi].get();
         RHI_CommandList* cmd_list = queue->NextCommandList();
         cmd_list->Begin();
         return cmd_list;
     }
-    
+
     void RHI_CommandList::ImmediateExecutionEnd(RHI_CommandList* cmd_list)
     {
         cmd_list->Submit(nullptr, true);
         cmd_list->WaitForExecution();
-    
-        // signal that it's safe to proceed with the next ImmediateBegin
-        immediate_execution::is_executing = false;
-        immediate_execution::condition_var.notify_one();
+
+        uint32_t qi = static_cast<uint32_t>(cmd_list->GetQueue()->GetType());
+        immediate_execution::is_executing[qi] = false;
+        immediate_execution::condition_vars[qi].notify_one();
     }
 
     void RHI_CommandList::ImmediateExecutionShutdown()
     {
-        // wait for ongoing operations to complete
-        unique_lock<mutex> lock(immediate_execution::mutex_execution);
-        immediate_execution::condition_var.wait(lock, [] { return !immediate_execution::is_executing; });
+        for (uint32_t i = 0; i < immediate_execution::queue_type_count; i++)
+        {
+            unique_lock<mutex> lock(immediate_execution::mutexes[i]);
+            immediate_execution::condition_vars[i].wait(lock, [i] { return !immediate_execution::is_executing[i]; });
+        }
 
-        // now release memory
         immediate_execution::queues.fill(nullptr);
     }
 
@@ -1797,6 +1803,18 @@ namespace spartan
         if (Debugging::IsBreadcrumbsEnabled())
         {
             Breadcrumbs::BeginMarker(name);
+
+            int32_t gpu_slot = Breadcrumbs::GpuMarkerBegin(name);
+            if (gpu_slot >= 0)
+            {
+                m_breadcrumb_gpu_slots.push(gpu_slot);
+
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                if (buffer)
+                {
+                    WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), static_cast<uint32_t>(gpu_slot + 1));
+                }
+            }
         }
     }
 
@@ -1810,7 +1828,56 @@ namespace spartan
         if (Debugging::IsBreadcrumbsEnabled())
         {
             Breadcrumbs::EndMarker();
+
+            if (!m_breadcrumb_gpu_slots.empty())
+            {
+                int32_t gpu_slot = m_breadcrumb_gpu_slots.top();
+                m_breadcrumb_gpu_slots.pop();
+
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                if (buffer && gpu_slot >= 0)
+                {
+                    WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), Breadcrumbs::gpu_marker_completed);
+                }
+            }
         }
+    }
+
+    void RHI_CommandList::WriteGpuBreadcrumb(RHI_Buffer* buffer, uint32_t slot, uint32_t value)
+    {
+        SP_ASSERT(buffer && buffer->GetRhiResource());
+        SP_ASSERT(m_state == RHI_CommandListState::Recording);
+
+        // vkCmdFillBuffer is a transfer op and cannot be issued inside a render pass
+        if (m_render_pass_active)
+        {
+            RenderPassEnd();
+        }
+
+        VkCommandBuffer cmd = static_cast<VkCommandBuffer>(m_rhi_resource);
+
+        // synchronize with any prior breadcrumb fill to avoid write-after-write hazards
+        VkMemoryBarrier2 barrier = {};
+        barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        barrier.srcStageMask  = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask  = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+
+        VkDependencyInfo dep    = {};
+        dep.sType               = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.memoryBarrierCount  = 1;
+        dep.pMemoryBarriers     = &barrier;
+
+        vkCmdPipelineBarrier2(cmd, &dep);
+
+        vkCmdFillBuffer(
+            cmd,
+            static_cast<VkBuffer>(buffer->GetRhiResource()),
+            static_cast<VkDeviceSize>(slot * sizeof(uint32_t)),
+            sizeof(uint32_t),
+            value
+        );
     }
     
     uint32_t RHI_CommandList::BeginTimestamp()
@@ -1963,6 +2030,24 @@ namespace spartan
             RHI_Device::MarkerBegin(this, name, Vector4::Zero);
             m_debug_label_stack.push(name);
         }
+
+        // gpu breadcrumbs
+        if (Debugging::IsBreadcrumbsEnabled())
+        {
+            Breadcrumbs::BeginMarker(name);
+
+            int32_t gpu_slot = Breadcrumbs::GpuMarkerBegin(name);
+            if (gpu_slot >= 0)
+            {
+                m_breadcrumb_gpu_slots.push(gpu_slot);
+
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                if (buffer)
+                {
+                    WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), static_cast<uint32_t>(gpu_slot + 1));
+                }
+            }
+        }
     
         // track active time blocks (for nesting)
         m_active_timeblocks.push(name);
@@ -1977,6 +2062,24 @@ namespace spartan
         {
             RHI_Device::MarkerEnd(this);
             m_debug_label_stack.pop();
+        }
+
+        // gpu breadcrumbs
+        if (Debugging::IsBreadcrumbsEnabled())
+        {
+            Breadcrumbs::EndMarker();
+
+            if (!m_breadcrumb_gpu_slots.empty())
+            {
+                int32_t gpu_slot = m_breadcrumb_gpu_slots.top();
+                m_breadcrumb_gpu_slots.pop();
+
+                RHI_Buffer* buffer = Breadcrumbs::GetGpuBuffer();
+                if (buffer && gpu_slot >= 0)
+                {
+                    WriteGpuBreadcrumb(buffer, static_cast<uint32_t>(gpu_slot), Breadcrumbs::gpu_marker_completed);
+                }
+            }
         }
     
         // timing
@@ -2577,6 +2680,34 @@ namespace spartan
             1,
             1,
             RHI_Image_Layout::Shader_Read
+        );
+    }
+
+    void RHI_CommandList::CopyBufferToBuffer(void* source, RHI_Buffer* destination, uint64_t size)
+    {
+        SP_ASSERT(source && destination && size > 0);
+
+        VkBufferCopy region = {};
+        region.size         = size;
+        vkCmdCopyBuffer(
+            static_cast<VkCommandBuffer>(GetRhiResource()),
+            *reinterpret_cast<VkBuffer*>(&source),
+            static_cast<VkBuffer>(destination->GetRhiResource()),
+            1, &region
+        );
+    }
+
+    void RHI_CommandList::CopyBufferToBuffer(RHI_Buffer* source, RHI_Buffer* destination, uint64_t size)
+    {
+        SP_ASSERT(source && destination && size > 0);
+
+        VkBufferCopy region = {};
+        region.size         = size;
+        vkCmdCopyBuffer(
+            static_cast<VkCommandBuffer>(GetRhiResource()),
+            static_cast<VkBuffer>(source->GetRhiResource()),
+            static_cast<VkBuffer>(destination->GetRhiResource()),
+            1, &region
         );
     }
 

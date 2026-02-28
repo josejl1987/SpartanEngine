@@ -101,7 +101,7 @@ void ray_gen()
 #endif
     
     // ensure geometry_infos is in pipeline layout
-    if (geometry_infos[0].vertex_count == 0xFFFFFFFF)
+    if (geometry_infos[0].vertex_offset == 0xFFFFFFFF)
         return;
     
     TraceRay(tlas, RAY_FLAG_NONE, 0xFF, 0, 1, 0, ray, payload);
@@ -130,13 +130,6 @@ void miss(inout Payload payload : SV_RayPayload)
     payload.roughness    = 0.0f;
 }
 
-uint64_t make_address(uint2 addr)
-{
-    return uint64_t(addr.x) | (uint64_t(addr.y) << 32);
-}
-
-static const uint VERTEX_STRIDE = 44; // pos(12) + uv(8) + normal(12) + tangent(12)
-
 [shader("closesthit")]
 void closest_hit(inout Payload payload : SV_RayPayload, in BuiltInTriangleIntersectionAttributes attribs : SV_IntersectionAttributes)
 {
@@ -151,39 +144,24 @@ void closest_hit(inout Payload payload : SV_RayPayload, in BuiltInTriangleInters
     uint instance_index = InstanceIndex();
     GeometryInfo geo    = geometry_infos[instance_index];
     
-    // fetch triangle indices
-    uint64_t index_addr   = make_address(geo.index_buffer_address);
-    uint primitive_index  = PrimitiveIndex();
-    uint index_offset     = (geo.index_offset + primitive_index * 3) * 4;
+    // fetch triangle indices from the global index buffer
+    uint primitive_index = PrimitiveIndex();
+    uint index_base      = geo.index_offset + primitive_index * 3;
+    uint i0 = geometry_indices[index_base + 0];
+    uint i1 = geometry_indices[index_base + 1];
+    uint i2 = geometry_indices[index_base + 2];
     
-    uint i0 = vk::RawBufferLoad<uint>(index_addr + index_offset + 0);
-    uint i1 = vk::RawBufferLoad<uint>(index_addr + index_offset + 4);
-    uint i2 = vk::RawBufferLoad<uint>(index_addr + index_offset + 8);
-    
-    // fetch vertex data
-    uint64_t vertex_addr = make_address(geo.vertex_buffer_address);
-    uint v0_offset       = (geo.vertex_offset + i0) * VERTEX_STRIDE;
-    uint v1_offset       = (geo.vertex_offset + i1) * VERTEX_STRIDE;
-    uint v2_offset       = (geo.vertex_offset + i2) * VERTEX_STRIDE;
-    
-    float2 uv0 = vk::RawBufferLoad<float2>(vertex_addr + v0_offset + 12);
-    float2 uv1 = vk::RawBufferLoad<float2>(vertex_addr + v1_offset + 12);
-    float2 uv2 = vk::RawBufferLoad<float2>(vertex_addr + v2_offset + 12);
-    
-    float3 n0 = vk::RawBufferLoad<float3>(vertex_addr + v0_offset + 20);
-    float3 n1 = vk::RawBufferLoad<float3>(vertex_addr + v1_offset + 20);
-    float3 n2 = vk::RawBufferLoad<float3>(vertex_addr + v2_offset + 20);
-    
-    float3 t0 = vk::RawBufferLoad<float3>(vertex_addr + v0_offset + 32);
-    float3 t1 = vk::RawBufferLoad<float3>(vertex_addr + v1_offset + 32);
-    float3 t2 = vk::RawBufferLoad<float3>(vertex_addr + v2_offset + 32);
+    // fetch vertex data from the global vertex buffer
+    PulledVertex v0 = geometry_vertices[geo.vertex_offset + i0];
+    PulledVertex v1 = geometry_vertices[geo.vertex_offset + i1];
+    PulledVertex v2 = geometry_vertices[geo.vertex_offset + i2];
     
     // barycentric interpolation
     float3 bary = float3(1.0f - attribs.barycentrics.x - attribs.barycentrics.y, attribs.barycentrics.x, attribs.barycentrics.y);
     
-    float2 texcoord       = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
-    float3 normal_object  = normalize(n0 * bary.x + n1 * bary.y + n2 * bary.z);
-    float3 tangent_object = normalize(t0 * bary.x + t1 * bary.y + t2 * bary.z);
+    float2 texcoord       = v0.uv * bary.x + v1.uv * bary.y + v2.uv * bary.z;
+    float3 normal_object  = normalize(v0.normal * bary.x + v1.normal * bary.y + v2.normal * bary.z);
+    float3 tangent_object = normalize(v0.tangent * bary.x + v1.tangent * bary.y + v2.tangent * bary.z);
     
     // world space transform
     float3x3 obj_to_world = (float3x3)ObjectToWorld4x3();

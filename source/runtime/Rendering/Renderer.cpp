@@ -222,7 +222,9 @@ namespace spartan
 
         if (RHI_Device::GetPrimaryPhysicalDevice()->IsBelowMinimumRequirements())
         {
+            Window::SetSplashScreenVisible(false);
             SP_WARNING_WINDOW("The GPU does not meet the minimum requirements for running the engine. The engine might be missing features and it won't perform as expected.");
+            Window::SetSplashScreenVisible(true);
         }
 
         // events
@@ -417,7 +419,13 @@ namespace spartan
                 // aabbs (always, they change with entity transforms)
                 {
                     UpdateBoundingBoxes(m_cmd_list_present);
-                    RHI_Device::UpdateBindlessAABBs(GetBuffer(Renderer_Buffer::AABBs));
+
+                    static bool aabbs_descriptor_set = false;
+                    if (!aabbs_descriptor_set)
+                    {
+                        RHI_Device::UpdateBindlessAABBs(GetBuffer(Renderer_Buffer::AABBs));
+                        aabbs_descriptor_set = true;
+                    }
                 }
 
                 // draw data
@@ -425,12 +433,51 @@ namespace spartan
                     if (m_draw_data_count > 0)
                     {
                         RHI_Buffer* buffer = GetBuffer(Renderer_Buffer::DrawData);
-                        buffer->ResetOffset();
-                        buffer->Update(m_cmd_list_present, &m_draw_data_cpu[0], buffer->GetStride() * m_draw_data_count);
+                        uint32_t frame_byte_offset = m_frame_resource_index * renderer_max_draw_calls * static_cast<uint32_t>(sizeof(Sb_DrawData));
+                        uint32_t upload_size       = static_cast<uint32_t>(sizeof(Sb_DrawData)) * m_draw_data_count;
+                        m_cmd_list_present->UpdateBuffer(buffer, frame_byte_offset, upload_size, &m_draw_data_cpu[0]);
                     }
 
-                    // descriptor must follow the rotated buffer
-                    RHI_Device::UpdateBindlessDrawData(GetBuffer(Renderer_Buffer::DrawData));
+                    // the descriptor points to a single large buffer that holds all frames' draw data
+                    // at different offsets, so it only needs to be set once; this eliminates the race
+                    // where vkUpdateDescriptorSets (host-side, instantly visible under UPDATE_AFTER_BIND)
+                    // would change the buffer pointer while the previous frame's phase 3 transparent pass
+                    // was still reading from it on the gpu
+                    static bool draw_data_descriptor_set = false;
+                    if (!draw_data_descriptor_set)
+                    {
+                        RHI_Device::UpdateBindlessDrawData(GetBuffer(Renderer_Buffer::DrawData));
+                        draw_data_descriptor_set = true;
+                    }
+                }
+
+                // geometry buffers (vertex pulling via bindless structured buffers)
+                {
+                    static RHI_Buffer* last_vertex_buffer = nullptr;
+                    RHI_Buffer* current_vertex = GeometryBuffer::GetVertexBuffer();
+                    if (current_vertex && current_vertex != last_vertex_buffer)
+                    {
+                        RHI_Device::UpdateBindlessGeometryVertices(current_vertex);
+                        last_vertex_buffer = current_vertex;
+                    }
+
+                    static RHI_Buffer* last_index_buffer = nullptr;
+                    RHI_Buffer* current_index = GeometryBuffer::GetIndexBuffer();
+                    if (current_index && current_index != last_index_buffer)
+                    {
+                        RHI_Device::UpdateBindlessGeometryIndices(current_index);
+                        last_index_buffer = current_index;
+                    }
+                }
+
+                // dummy instance buffer (vertex pulling identity instances)
+                {
+                    static bool instances_descriptor_set = false;
+                    if (!instances_descriptor_set)
+                    {
+                        RHI_Device::UpdateBindlessInstances(GetBuffer(Renderer_Buffer::DummyInstance));
+                        instances_descriptor_set = true;
+                    }
                 }
 
                 // indirect draw buffers
@@ -815,15 +862,18 @@ namespace spartan
         entry.aabb_index         = 0;
         entry.padding            = 0;
 
-        // write directly to the mapped gpu buffer
+        // the draw data buffer is a single large allocation partitioned into per-frame regions;
+        // each frame writes to its own region so there is no write-after-read race with the gpu
+        uint32_t global_index = m_frame_resource_index * renderer_max_draw_calls + index;
+
         RHI_Buffer* buffer = GetBuffer(Renderer_Buffer::DrawData);
         if (void* mapped = buffer->GetMappedData())
         {
-            void* dst = static_cast<char*>(mapped) + index * sizeof(Sb_DrawData);
+            void* dst = static_cast<char*>(mapped) + global_index * sizeof(Sb_DrawData);
             memcpy(dst, &entry, sizeof(Sb_DrawData));
         }
 
-        return index;
+        return global_index;
     }
 
     void Renderer::UpdateMaterials(RHI_CommandList* cmd_list)
@@ -1096,11 +1146,15 @@ namespace spartan
             }
         }
 
-        // gpu upload
+        // gpu upload to the current frame's region within the shared aabb buffer
         uint32_t total_aabb_count = m_draw_calls_prepass_count + m_indirect_draw_count;
-        RHI_Buffer* buffer = GetBuffer(Renderer_Buffer::AABBs);
-        buffer->ResetOffset();
-        buffer->Update(cmd_list, &m_bindless_aabbs[0], buffer->GetStride() * total_aabb_count);
+        if (total_aabb_count > 0)
+        {
+            RHI_Buffer* buffer         = GetBuffer(Renderer_Buffer::AABBs);
+            uint32_t frame_byte_offset = m_frame_resource_index * rhi_max_array_size * static_cast<uint32_t>(sizeof(Sb_Aabb));
+            uint32_t upload_size       = static_cast<uint32_t>(sizeof(Sb_Aabb)) * total_aabb_count;
+            cmd_list->UpdateBuffer(buffer, frame_byte_offset, upload_size, &m_bindless_aabbs[0]);
+        }
     }
 
     void Renderer::UpdateDrawCalls(RHI_CommandList* cmd_list)
@@ -1225,14 +1279,15 @@ namespace spartan
                 args.vertex_offset        = static_cast<int32_t>(renderable->GetVertexOffset(dc.lod_index));
                 args.first_instance       = dc.instance_index;
 
-                // per-draw data (aabb_index sits after prepass aabbs)
+                // per-draw data (aabb_index includes the frame offset into the shared aabb buffer)
+                uint32_t aabb_frame_offset = m_frame_resource_index * rhi_max_array_size;
                 Sb_DrawData& data       = m_indirect_draw_data[idx];
                 Entity* entity          = renderable->GetEntity();
                 data.transform          = entity->GetMatrix();
                 data.transform_previous = entity->GetMatrixPrevious();
                 data.material_index     = material->GetIndex();
                 data.is_transparent     = 0;
-                data.aabb_index         = m_draw_calls_prepass_count + idx;
+                data.aabb_index         = aabb_frame_offset + m_draw_calls_prepass_count + idx;
                 data.padding            = 0;
             }
         }
@@ -1391,13 +1446,9 @@ namespace spartan
 
                         instances.push_back(instance);
 
-                        Sb_GeometryInfo geo_info       = {};
-                        geo_info.vertex_buffer_address = vertex_buffer->GetDeviceAddress();
-                        geo_info.index_buffer_address  = index_buffer->GetDeviceAddress();
-                        geo_info.vertex_offset         = renderable->GetVertexOffset(0);
-                        geo_info.index_offset          = renderable->GetIndexOffset(0);
-                        geo_info.vertex_count          = renderable->GetVertexCount(0);
-                        geo_info.index_count           = renderable->GetIndexCount(0);
+                        Sb_GeometryInfo geo_info = {};
+                        geo_info.vertex_offset  = renderable->GetVertexOffset(0);
+                        geo_info.index_offset   = renderable->GetIndexOffset(0);
                         geometry_infos.push_back(geo_info);
                     }
                 }

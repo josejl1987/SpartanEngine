@@ -490,6 +490,21 @@ namespace spartan
         // todo: implement bindless resources for d3d12
     }
 
+    void RHI_Device::UpdateBindlessGeometryVertices(RHI_Buffer* buffer)
+    {
+        // todo: implement bindless resources for d3d12
+    }
+
+    void RHI_Device::UpdateBindlessGeometryIndices(RHI_Buffer* buffer)
+    {
+        // todo: implement bindless resources for d3d12
+    }
+
+    void RHI_Device::UpdateBindlessInstances(RHI_Buffer* buffer)
+    {
+        // todo: implement bindless resources for d3d12
+    }
+
     void* RHI_Device::MemoryGetMappedDataFromBuffer(void* resource)
     {
         // d3d12 buffers handle their own mapping

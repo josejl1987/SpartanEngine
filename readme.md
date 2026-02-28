@@ -72,7 +72,7 @@ The renderer is built around a single principle: **the GPU owns the data**. Ever
 ### Architecture
 
 - **Zero-binding draw path**, all per-draw data is stored in a single bindless storage buffer, push constants carry only a 4-byte index into it, keeping the entire push constant footprint at 80 bytes
-- **Single global vertex and index buffer** for all geometry, inspired by id Tech, the CPU never re-binds geometry between draws
+- **Single global vertex and index buffer** for all geometry, inspired by id Tech, with **vertex pulling** (vertex shaders fetch directly from bindless StructuredBuffers, bypassing the fixed-function Input Assembler), the same buffers are shared by rasterization and ray tracing
 - **GPU-driven indirect rendering**, a compute shader performs frustum and occlusion culling entirely on the GPU, emitting a compacted indirect argument buffer, the CPU issues a single `DrawIndexedIndirectCount` per pass, replacing thousands of individual draw calls
 - **Bindless materials, lights, and samplers**, all accessed through global descriptor arrays with no per-object binding
 - **Uber shaders**, minimal pipeline state object (PSO) permutations eliminate draw call state changes

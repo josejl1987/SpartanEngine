@@ -26,7 +26,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 // - the functions are shared between depth_prepass.hlsl, g_buffer.hlsl and depth_light.hlsl
 // - this is because the calculations have to be exactly the same and therefore produce identical values over time (motion vectors) and space (depth pre-pass vs g-buffer)
 
-// vertex buffer input
+// vertex buffer input (used by cpu-driven draw path via input assembly)
 struct Vertex_PosUvNorTan
 {
     float4 position                : POSITION;
@@ -41,10 +41,32 @@ struct Vertex_PosUvNorTan
     uint instance_scale            : INSTANCE_SCALE;
 };
 
+// loads vertex data from the global geometry buffer instead of relying on fixed-function
+// input assembly. indirect draws always use identity instances since per-draw transforms
+// come from the indirect draw data buffer, so instance fields are zeroed.
+Vertex_PosUvNorTan pull_vertex(uint vertex_id)
+{
+    PulledVertex pulled = geometry_vertices[vertex_id];
+
+    Vertex_PosUvNorTan v;
+    v.position            = float4(pulled.position, 1.0f);
+    v.uv                  = pulled.uv;
+    v.normal              = pulled.normal;
+    v.tangent             = pulled.tangent;
+    v.instance_position_x = (min16float)0;
+    v.instance_position_y = (min16float)0;
+    v.instance_position_z = (min16float)0;
+    v.instance_normal_oct = 0;
+    v.instance_yaw        = 0;
+    v.instance_scale      = 0;
+
+    return v;
+}
+
 // vertex buffer output
 struct gbuffer_vertex
 {
-    float4 position          : SV_POSITION;
+    precise float4 position  : SV_POSITION;
     float4 position_previous : POS_CLIP_PREVIOUS;
     float3 normal            : NORMAL_WORLD;
     float3 tangent           : TANGENT_WORLD;

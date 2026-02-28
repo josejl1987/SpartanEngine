@@ -165,7 +165,7 @@ void main_cs(uint3 thread_id : SV_DispatchThreadID)
         {
             // compute shadow term
             // for directional lights: ray traced shadows are mutually exclusive with rasterized/screen-space shadows
-            bool use_ray_traced_shadow = light.is_directional() && is_ray_traced_shadows_enabled();
+            bool use_ray_traced_shadow = light.is_directional() && light.has_shadows() && is_ray_traced_shadows_enabled();
             
             if (use_ray_traced_shadow)
             {

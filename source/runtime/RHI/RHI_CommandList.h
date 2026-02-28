@@ -146,6 +146,9 @@ namespace spartan
         void BeginMarker(const char* name);
         void EndMarker();
 
+        // gpu breadcrumbs - writes a uint32 value into a slot of the breadcrumb buffer on the gpu timeline
+        void WriteGpuBreadcrumb(RHI_Buffer* buffer, uint32_t slot, uint32_t value);
+
         // timestamp queries
         uint32_t BeginTimestamp();
         void EndTimestamp();
@@ -191,6 +194,8 @@ namespace spartan
         const RHI_CommandListState GetState() const                { return m_state; }
         RHI_Queue* GetQueue() const                                { return m_queue; }
         void CopyTextureToBuffer(RHI_Texture* source, RHI_Buffer* destination);
+        void CopyBufferToBuffer(void* source, RHI_Buffer* destination, uint64_t size);
+        void CopyBufferToBuffer(RHI_Buffer* source, RHI_Buffer* destination, uint64_t size);
 
         // rhi
         void* GetRhiResourcePipeline();
@@ -221,6 +226,7 @@ namespace spartan
         bool m_render_pass_active                            = false;
         std::stack<const char*> m_active_timeblocks;
         std::stack<const char*> m_debug_label_stack;
+        std::stack<int32_t> m_breadcrumb_gpu_slots;
         std::mutex m_mutex_reset;
         RHI_PipelineState m_pso;
         std::vector<PendingBarrierInfo> m_pending_barriers;

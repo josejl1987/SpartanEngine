@@ -297,12 +297,12 @@ float3 get_position(float z, float2 uv)
 
 float3 get_position(float2 uv)
 {
-    return get_position(get_depth(uv), uv);
+    return get_position(get_depth(uv), uv / buffer_frame.resolution_scale);
 }
 
 float3 get_position(uint2 pos)
 {
-    const float2 uv = (pos + 0.5f) / buffer_frame.resolution_render;
+    const float2 uv = (pos + 0.5f) / (buffer_frame.resolution_render * buffer_frame.resolution_scale);
     return get_position(get_depth(pos), uv);
 }
 
@@ -313,7 +313,7 @@ float3 get_position_view_space(uint2 pos)
 
 float3 get_position_view_space(float2 uv)
 {
-    return mul(float4(get_position(uv), 1.0f), buffer_frame.view).xyz;
+    return mul(float4(get_position(get_depth(uv), uv / buffer_frame.resolution_scale), 1.0f), buffer_frame.view).xyz;
 }
 
 /*------------------------------------------------------------------------------
@@ -344,7 +344,7 @@ float3 get_view_direction(float depth, float2 uv)
 
 float3 get_view_direction(float2 uv)
 {
-    return get_view_direction(get_position(uv));
+    return get_view_direction(get_position(get_depth(uv), uv / buffer_frame.resolution_scale));
 }
 
 float3 get_view_direction(uint2 pos, float2 resolution)
@@ -355,7 +355,7 @@ float3 get_view_direction(uint2 pos, float2 resolution)
 
 float3 get_view_direction_view_space(float2 uv)
 {
-    return mul(float4(get_view_direction(get_position(uv)), 0.0f), buffer_frame.view).xyz;
+    return mul(float4(get_view_direction(get_position(get_depth(uv), uv / buffer_frame.resolution_scale)), 0.0f), buffer_frame.view).xyz;
 }
 
 float3 get_view_direction_view_space(uint2 pos, float2 resolution)

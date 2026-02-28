@@ -27,6 +27,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../RHI_CommandList.h"
 #include "../RHI_Queue.h"
 #include "../Core/Debugging.h"
+#include "../Core/Breadcrumbs.h"
 #include <wrl/client.h>
 #include <SDL3/SDL_video.h>
 #include <SDL3/SDL_properties.h>
@@ -348,7 +349,15 @@ namespace spartan
         {
             if (result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET)
             {
-                SP_LOG_ERROR("Device lost during present");
+                if (Debugging::IsBreadcrumbsEnabled())
+                {
+                    Breadcrumbs::OnDeviceLost();
+                    SP_LOG_ERROR("GPU crashed. Check 'log.txt' for breadcrumbs report.");
+                }
+                else
+                {
+                    SP_LOG_ERROR("Device lost during present");
+                }
             }
             else
             {

@@ -27,7 +27,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 static const uint INITIAL_CANDIDATE_SAMPLES   = 16;
 static const float RUSSIAN_ROULETTE_PROB      = 0.85f;
 static const uint RUSSIAN_ROULETTE_START      = 3;
-static const uint VERTEX_STRIDE               = 44;
 static const float MIN_AREA_LIGHT_SOLID_ANGLE = 1e-4f;
 static const float SKY_MIP_LEVEL              = 2.0f;
 
@@ -42,11 +41,6 @@ struct [raypayload] PathPayload
     float  triangle_area  : read(caller) : write(closesthit);
     bool   hit            : read(caller) : write(closesthit, miss);
 };
-
-uint64_t make_address(uint2 addr)
-{
-    return uint64_t(addr.x) | (uint64_t(addr.y) << 32);
-}
 
 float compute_spec_probability(float roughness, float metallic, float n_dot_v)
 {
@@ -544,7 +538,7 @@ void ray_gen()
     uint2 launch_size = DispatchRaysDimensions().xy;
     float2 uv = (launch_id + 0.5f) / launch_size;
 
-    if (geometry_infos[0].vertex_count == 0xFFFFFFFF)
+    if (geometry_infos[0].vertex_offset == 0xFFFFFFFF)
         return;
 
     // early out for sky pixels
@@ -663,44 +657,25 @@ void closest_hit(inout PathPayload payload : SV_RayPayload, in BuiltInTriangleIn
     uint instance_index = InstanceIndex();
     GeometryInfo geo    = geometry_infos[instance_index];
 
-    // load triangle indices
-    uint64_t index_addr  = make_address(geo.index_buffer_address);
+    // fetch triangle indices from the global index buffer
     uint primitive_index = PrimitiveIndex();
-    uint index_offset    = (geo.index_offset + primitive_index * 3) * 4;
+    uint index_base      = geo.index_offset + primitive_index * 3;
+    uint i0 = geometry_indices[index_base + 0];
+    uint i1 = geometry_indices[index_base + 1];
+    uint i2 = geometry_indices[index_base + 2];
 
-    uint i0 = vk::RawBufferLoad<uint>(index_addr + index_offset + 0);
-    uint i1 = vk::RawBufferLoad<uint>(index_addr + index_offset + 4);
-    uint i2 = vk::RawBufferLoad<uint>(index_addr + index_offset + 8);
-
-    // load vertex data
-    uint64_t vertex_addr = make_address(geo.vertex_buffer_address);
-    uint v0_offset = (geo.vertex_offset + i0) * VERTEX_STRIDE;
-    uint v1_offset = (geo.vertex_offset + i1) * VERTEX_STRIDE;
-    uint v2_offset = (geo.vertex_offset + i2) * VERTEX_STRIDE;
-
-    float3 p0 = vk::RawBufferLoad<float3>(vertex_addr + v0_offset + 0);
-    float3 p1 = vk::RawBufferLoad<float3>(vertex_addr + v1_offset + 0);
-    float3 p2 = vk::RawBufferLoad<float3>(vertex_addr + v2_offset + 0);
-
-    float3 n0 = vk::RawBufferLoad<float3>(vertex_addr + v0_offset + 20);
-    float3 n1 = vk::RawBufferLoad<float3>(vertex_addr + v1_offset + 20);
-    float3 n2 = vk::RawBufferLoad<float3>(vertex_addr + v2_offset + 20);
-
-    float3 t0 = vk::RawBufferLoad<float3>(vertex_addr + v0_offset + 32);
-    float3 t1 = vk::RawBufferLoad<float3>(vertex_addr + v1_offset + 32);
-    float3 t2 = vk::RawBufferLoad<float3>(vertex_addr + v2_offset + 32);
-
-    float2 uv0 = vk::RawBufferLoad<float2>(vertex_addr + v0_offset + 12);
-    float2 uv1 = vk::RawBufferLoad<float2>(vertex_addr + v1_offset + 12);
-    float2 uv2 = vk::RawBufferLoad<float2>(vertex_addr + v2_offset + 12);
+    // fetch vertex data from the global vertex buffer
+    PulledVertex pv0 = geometry_vertices[geo.vertex_offset + i0];
+    PulledVertex pv1 = geometry_vertices[geo.vertex_offset + i1];
+    PulledVertex pv2 = geometry_vertices[geo.vertex_offset + i2];
 
     // interpolate vertex attributes
     float3 bary = float3(1.0f - attribs.barycentrics.x - attribs.barycentrics.y,
                          attribs.barycentrics.x, attribs.barycentrics.y);
 
-    float3 normal_object  = normalize(n0 * bary.x + n1 * bary.y + n2 * bary.z);
-    float3 tangent_object = normalize(t0 * bary.x + t1 * bary.y + t2 * bary.z);
-    float2 texcoord       = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
+    float3 normal_object  = normalize(pv0.normal * bary.x + pv1.normal * bary.y + pv2.normal * bary.z);
+    float3 tangent_object = normalize(pv0.tangent * bary.x + pv1.tangent * bary.y + pv2.tangent * bary.z);
+    float2 texcoord       = pv0.uv * bary.x + pv1.uv * bary.y + pv2.uv * bary.z;
 
     // transform to world space
     float3x3 obj_to_world  = (float3x3)ObjectToWorld4x3();
@@ -776,8 +751,8 @@ void closest_hit(inout PathPayload payload : SV_RayPayload, in BuiltInTriangleIn
     float3 hit_position = WorldRayOrigin() + WorldRayDirection() * dist;
 
     float3x3 obj_to_world_3x3 = (float3x3)ObjectToWorld4x3();
-    float3 edge1_world   = mul(p1 - p0, obj_to_world_3x3);
-    float3 edge2_world   = mul(p2 - p0, obj_to_world_3x3);
+    float3 edge1_world   = mul(pv1.position - pv0.position, obj_to_world_3x3);
+    float3 edge2_world   = mul(pv2.position - pv0.position, obj_to_world_3x3);
     float triangle_area  = 0.5f * length(cross(edge1_world, edge2_world));
 
     // populate payload

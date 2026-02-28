@@ -85,17 +85,26 @@ namespace spartan
         buffer(Renderer_Buffer::DummyInstance)      = make_shared<RHI_Buffer>(RHI_Buffer_Type::Instance, sizeof(Instance),                           static_cast<uint32_t>(identity.size()), &identity,          true, "dummy_instance_buffer");
         buffer(Renderer_Buffer::GeometryInfo)       = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage,  static_cast<uint32_t>(sizeof(Sb_GeometryInfo)), rhi_max_array_size,                     nullptr,            true, "geometry_info");
 
+        // single draw data and aabb buffers large enough for all frames; each frame writes to its
+        // own offset region so the bindless descriptors never change, eliminating the race where
+        // vkUpdateDescriptorSets (host-side, instantly visible under UPDATE_AFTER_BIND) would
+        // change the buffer pointer while in-flight gpu commands were still reading from it
+        buffer(Renderer_Buffer::DrawData) = make_shared<RHI_Buffer>(
+            RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),
+            renderer_max_draw_calls * renderer_draw_data_buffer_count, nullptr, true,
+            "draw_data"
+        );
+        buffer(Renderer_Buffer::AABBs) = make_shared<RHI_Buffer>(
+            RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_Aabb)),
+            rhi_max_array_size * renderer_draw_data_buffer_count, nullptr, true,
+            "aabbs"
+        );
+
         // per-frame rotated buffers
         uint32_t draw_count_init = 0;
         for (uint32_t i = 0; i < renderer_draw_data_buffer_count; i++)
         {
             FrameResource& fr = m_frame_resources[i];
-
-            fr.draw_data = make_shared<RHI_Buffer>(
-                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_DrawData)),
-                renderer_max_draw_calls, nullptr, true,
-                (string("draw_data_") + to_string(i)).c_str()
-            );
 
             fr.indirect_draw_args = make_shared<RHI_Buffer>(
                 RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_IndirectDrawArgs)),
@@ -126,23 +135,15 @@ namespace spartan
                 1, &draw_count_init, true,
                 (string("indirect_draw_count_") + to_string(i)).c_str()
             );
-
-            fr.aabbs = make_shared<RHI_Buffer>(
-                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_Aabb)),
-                rhi_max_array_size, nullptr, true,
-                (string("aabbs_") + to_string(i)).c_str()
-            );
         }
 
         // point the active buffer slots at frame 0
         const FrameResource& fr = m_frame_resources[0];
-        buffer(Renderer_Buffer::DrawData)            = fr.draw_data;
         buffer(Renderer_Buffer::IndirectDrawArgs)    = fr.indirect_draw_args;
         buffer(Renderer_Buffer::IndirectDrawData)    = fr.indirect_draw_data;
         buffer(Renderer_Buffer::IndirectDrawArgsOut) = fr.indirect_draw_args_out;
         buffer(Renderer_Buffer::IndirectDrawDataOut) = fr.indirect_draw_data_out;
         buffer(Renderer_Buffer::IndirectDrawCount)   = fr.indirect_draw_count;
-        buffer(Renderer_Buffer::AABBs)               = fr.aabbs;
 
         // particle buffers
         const uint32_t particle_max = 100000;
@@ -663,19 +664,19 @@ namespace spartan
         shader(Renderer_Shader::indirect_cull_c) = make_shared<RHI_Shader>();
         shader(Renderer_Shader::indirect_cull_c)->Compile(RHI_Shader_Type::Compute, shader_dir + "indirect_cull.hlsl", async);
 
-        // indirect draw g-buffer variants (vertex shader uses draw_id instead of push constants)
+        // indirect draw g-buffer variants (vertex pulling, no input assembly)
         shader(Renderer_Shader::gbuffer_indirect_v) = make_shared<RHI_Shader>();
         shader(Renderer_Shader::gbuffer_indirect_v)->AddDefine("INDIRECT_DRAW");
-        shader(Renderer_Shader::gbuffer_indirect_v)->Compile(RHI_Shader_Type::Vertex, shader_dir + "g_buffer.hlsl", async, RHI_Vertex_Type::PosUvNorTan);
+        shader(Renderer_Shader::gbuffer_indirect_v)->Compile(RHI_Shader_Type::Vertex, shader_dir + "g_buffer.hlsl", async, RHI_Vertex_Type::Max);
 
         shader(Renderer_Shader::gbuffer_indirect_p) = make_shared<RHI_Shader>();
         shader(Renderer_Shader::gbuffer_indirect_p)->AddDefine("INDIRECT_DRAW");
         shader(Renderer_Shader::gbuffer_indirect_p)->Compile(RHI_Shader_Type::Pixel, shader_dir + "g_buffer.hlsl", async);
 
-        // indirect draw depth prepass variant
+        // indirect draw depth prepass variant (vertex pulling, no input assembly)
         shader(Renderer_Shader::depth_prepass_indirect_v) = make_shared<RHI_Shader>();
         shader(Renderer_Shader::depth_prepass_indirect_v)->AddDefine("INDIRECT_DRAW");
-        shader(Renderer_Shader::depth_prepass_indirect_v)->Compile(RHI_Shader_Type::Vertex, shader_dir + "depth_prepass.hlsl", async, RHI_Vertex_Type::PosUvNorTan);
+        shader(Renderer_Shader::depth_prepass_indirect_v)->Compile(RHI_Shader_Type::Vertex, shader_dir + "depth_prepass.hlsl", async, RHI_Vertex_Type::Max);
 
         // icon
         shader(Renderer_Shader::icon_c) = make_shared<RHI_Shader>();
@@ -777,8 +778,12 @@ namespace spartan
         }
 
         // gpu texture compression - compiled synchronously since it's needed during texture loading
+        shader(Renderer_Shader::texture_compress_bc1_c) = make_shared<RHI_Shader>();
+        shader(Renderer_Shader::texture_compress_bc1_c)->Compile(RHI_Shader_Type::Compute, shader_dir + "texture_compress_bc1.hlsl", false);
         shader(Renderer_Shader::texture_compress_bc3_c) = make_shared<RHI_Shader>();
         shader(Renderer_Shader::texture_compress_bc3_c)->Compile(RHI_Shader_Type::Compute, shader_dir + "texture_compress_bc3.hlsl", false);
+        shader(Renderer_Shader::texture_compress_bc5_c) = make_shared<RHI_Shader>();
+        shader(Renderer_Shader::texture_compress_bc5_c)->Compile(RHI_Shader_Type::Compute, shader_dir + "texture_compress_bc5.hlsl", false);
 
     }
 
@@ -963,13 +968,11 @@ namespace spartan
         m_frame_resource_index = (m_frame_resource_index + 1) % renderer_draw_data_buffer_count;
         const FrameResource& fr = m_frame_resources[m_frame_resource_index];
 
-        buffers[static_cast<uint8_t>(Renderer_Buffer::DrawData)]            = fr.draw_data;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawArgs)]    = fr.indirect_draw_args;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawData)]    = fr.indirect_draw_data;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawArgsOut)] = fr.indirect_draw_args_out;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawDataOut)] = fr.indirect_draw_data_out;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawCount)]   = fr.indirect_draw_count;
-        buffers[static_cast<uint8_t>(Renderer_Buffer::AABBs)]              = fr.aabbs;
     }
 
     RHI_Texture* Renderer::GetStandardTexture(const Renderer_StandardTexture type)
