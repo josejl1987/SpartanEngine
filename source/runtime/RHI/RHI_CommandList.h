@@ -97,6 +97,7 @@ namespace spartan
         // dispatch
         void Dispatch(uint32_t x, uint32_t y, uint32_t z = 1);
         void Dispatch(RHI_Texture* texture, float resolution_scale = 1.0f);
+        void DispatchIndirect(RHI_Buffer* args_buffer, const uint32_t args_offset = 0);
 
         // trace rays
         void TraceRays(const uint32_t width, const uint32_t height);
@@ -122,8 +123,9 @@ namespace spartan
         // buffers
         void SetBufferVertex(const RHI_Buffer* vertex, RHI_Buffer* instance = nullptr);
         void SetBufferIndex(const RHI_Buffer* buffer);
-        void SetBuffer(const uint32_t slot, RHI_Buffer* buffer) const;
-        void SetBuffer(const Renderer_BindingsUav slot, RHI_Buffer* buffer) const { SetBuffer(static_cast<uint32_t>(slot), buffer); }
+        void SetBuffer(const uint32_t slot, RHI_Buffer* buffer, bool is_uav = true) const;
+        void SetBuffer(const Renderer_BindingsUav slot, RHI_Buffer* buffer) const { SetBuffer(static_cast<uint32_t>(slot), buffer, true); }
+        void SetBuffer(const Renderer_BindingsSrv slot, RHI_Buffer* buffer) const { SetBuffer(static_cast<uint32_t>(slot), buffer, false); }
 
         // constant buffer
         void SetConstantBuffer(const uint32_t slot, RHI_Buffer* constant_buffer) const;

@@ -251,13 +251,13 @@ namespace spartan
         use_root_shader_directory = _use_root_shader_directory;
     }
 
-    RHI_Texture* ResourceCache::GetIcon(IconType type)
+    std::shared_ptr<RHI_Texture> ResourceCache::GetIcon(IconType type)
     {
         auto it = m_default_icons.find(type);
 
         if (it != m_default_icons.end())
-            return it->second.get();
+            return it->second;
     
-        return m_default_icons[IconType::File].get();
+        return m_default_icons[IconType::File];
     }
 }

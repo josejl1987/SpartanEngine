@@ -266,6 +266,17 @@ namespace spartan
             m_bounding_box_mesh = BoundingBox(vertices.data(), static_cast<uint32_t>(vertices.size()));
         }
 
+        // auto-detect skinned meshes
+        if (mesh->IsSkinned())
+        {
+            SetSkinned(true);
+            const BoneData* bone_data = mesh->GetBoneData();
+            if (bone_data)
+            {
+                SetBoneCount(bone_data->bone_count);
+            }
+        }
+
         Tick(); // update bounding boxes, frustum and distance culling
     }
 
@@ -503,6 +514,19 @@ namespace spartan
         {
             m_flags  &= ~static_cast<uint32_t>(flag);
             disabled  = true;
+        }
+    }
+
+    void Renderable::SetSkinned(const bool skinned)
+    {
+        m_is_skinned = skinned;
+
+        // For skinned meshes, we need to create a per-entity BLAS
+        // This will be built each frame from the skinned vertex output
+        if (skinned && !m_skinned_blas)
+        {
+            string blas_name = m_mesh->GetObjectName() + "_" + GetEntity()->GetObjectName() + "_skinned_blas";
+            m_skinned_blas = make_unique<RHI_AccelerationStructure>(RHI_AccelerationStructureType::Bottom, blas_name.c_str());
         }
     }
 

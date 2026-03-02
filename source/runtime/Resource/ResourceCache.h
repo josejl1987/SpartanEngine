@@ -108,6 +108,7 @@ namespace spartan
         template <class T>
         static std::shared_ptr<T> GetByPath(const std::string& path)
         {
+            std::lock_guard<std::mutex> guard(GetMutex());
             for (std::shared_ptr<IResource>& resource : GetResources())
             {
                 if (path == resource->GetResourceFilePath())
@@ -129,13 +130,16 @@ namespace spartan
                 return nullptr;
             }
 
-            // return cached resource if it already exists
-            std::shared_ptr<T> existing = GetByPath<T>(resource->GetResourceFilePath());
-            if (existing.get() != nullptr)
-                return existing;
+            std::lock_guard<std::mutex> guard(GetMutex());
+
+            // return cached resource if it already exists (inline check while holding lock)
+            for (const std::shared_ptr<IResource>& res : GetResources())
+            {
+                if (resource->GetResourceFilePath() == res->GetResourceFilePath())
+                    return std::static_pointer_cast<T>(res);
+            }
 
             // if not, cache it and return the cached resource
-            std::lock_guard<std::mutex> guard(GetMutex());
             return std::static_pointer_cast<T>(GetResources().emplace_back(resource));
         }
 
@@ -171,13 +175,14 @@ namespace spartan
         {
             if (!resource)
                 return;
+            std::lock_guard<std::mutex> guard(GetMutex());
             GetResources().erase
             (
                 std::remove_if
                 (
                     GetResources().begin(),
                     GetResources().end(),
-                    [](std::shared_ptr<IResource> resource) { return dynamic_cast<SpartanObject*>(resource.get())->GetObjectId() == resource->GetObjectId(); }
+                    [&resource](const std::shared_ptr<IResource>& res) { return res->GetObjectId() == resource->GetObjectId(); }
                 ),
                 GetResources().end()
             );
@@ -200,6 +205,6 @@ namespace spartan
         static std::mutex& GetMutex();
         static bool GetUseRootShaderDirectory();
         static void SetUseRootShaderDirectory(const bool use_root_shader_directory);
-        static RHI_Texture* GetIcon(IconType type);
+        static std::shared_ptr<RHI_Texture> GetIcon(IconType type);
     };
 }

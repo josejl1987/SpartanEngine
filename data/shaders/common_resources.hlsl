@@ -254,7 +254,10 @@ struct DrawData
     uint   material_index;
     uint   is_transparent;
     uint   aabb_index;
-    uint   padding;
+    uint   is_skinned;
+    uint   bone_offset;
+    uint   skinned_vertex_offset;
+    uint   padding2[2];
 };
 
 // bindless draw data - per-draw transforms, material indices, etc.
@@ -280,6 +283,23 @@ struct PackedInstance
 StructuredBuffer<PulledVertex> geometry_vertices         : register(t20, space8);
 StructuredBuffer<uint> geometry_indices                  : register(t22, space9);
 StructuredBuffer<PackedInstance> geometry_instances       : register(t23, space10);
+
+// gpu skinning - skinned vertex output buffer
+struct SkinnedVertex
+{
+    float3 position;
+    float  padding0;
+    float3 position_prev;
+    float  padding1;
+    float3 normal;
+    float  padding2;
+    float4 tangent;
+    float2 uv;
+    float  padding3;
+    float  padding4;
+};
+
+RWStructuredBuffer<SkinnedVertex> skinning_vertices_out    : register(u43);
 
 // gpu-driven indirect drawing uav bindings
 // input: populated by cpu, read by the cull compute shader

@@ -23,6 +23,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pch.h"
 #include "Entity.h"
 #include "Prefab.h"
+#include "Components/Animator.h"
 #include "Components/AudioSource.h"
 #include "Components/Camera.h"
 #include "Components/Light.h"

@@ -167,45 +167,45 @@ namespace
     
         if (entity->GetComponent<spartan::Light>())
         {
-            icon = spartan::ResourceCache::GetIcon(spartan::IconType::Light);
+            icon = spartan::ResourceCache::GetIcon(spartan::IconType::Light).get();
             ++match_count;
         }
     
         if (entity->GetComponent<spartan::Camera>())
         {
-            icon = spartan::ResourceCache::GetIcon(spartan::IconType::Camera);
+            icon = spartan::ResourceCache::GetIcon(spartan::IconType::Camera).get();
             ++match_count;
         }
     
         if (entity->GetComponent<spartan::AudioSource>())
         {
-            icon = spartan::ResourceCache::GetIcon(spartan::IconType::Audio);
+            icon = spartan::ResourceCache::GetIcon(spartan::IconType::Audio).get();
             ++match_count;
         }
 
         // everything has physics, ignore it
         //if (entity->GetComponent<spartan::Physics>())
         //{
-        //    icon = spartan::ResourceCache::GetIcon(spartan::IconType::Physics);
+        //    icon = spartan::ResourceCache::GetIcon(spartan::IconType::Physics).get();
         //    ++match_count;
         //}
     
         if (entity->GetComponent<spartan::Terrain>())
         {
-            icon = spartan::ResourceCache::GetIcon(spartan::IconType::Terrain);
+            icon = spartan::ResourceCache::GetIcon(spartan::IconType::Terrain).get();
             ++match_count;
         }
 
         if (entity->GetComponent<spartan::Renderable>())
         {
-            icon = spartan::ResourceCache::GetIcon(spartan::IconType::Model);
+            icon = spartan::ResourceCache::GetIcon(spartan::IconType::Model).get();
             ++match_count;
         }
 
         if (match_count > 1)
-            return spartan::ResourceCache::GetIcon(spartan::IconType::Hybrid);
+            return spartan::ResourceCache::GetIcon(spartan::IconType::Hybrid).get();
     
-        return icon ? icon : spartan::ResourceCache::GetIcon(spartan::IconType::Entity);
+        return icon ? icon : spartan::ResourceCache::GetIcon(spartan::IconType::Entity).get();
     }
 }
 

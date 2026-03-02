@@ -24,6 +24,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //= INCLUDES =====================
 #include <vector>
 #include <mutex>
+#include <optional>
 #include "../RHI/RHI_Vertex.h"
 #include "../Resource/IResource.h"
 #include "../Math/BoundingBox.h"
@@ -74,6 +75,16 @@ namespace spartan
     struct SubMesh
     {
         std::vector<MeshLod> lods; // list of LOD levels for this sub-mesh
+    };
+
+    // Skinning data (loaded from Assimp, used for GPU skinning)
+    struct BoneData
+    {
+        std::vector<math::Matrix> bone_offsets;      // Bone offset matrices
+        std::vector<std::string> bone_names;         // Bone names for animation lookup
+        std::vector<uint8_t> bone_indices;           // Packed bone indices (4 per vertex, uint8)
+        std::vector<float> bone_weights;             // Bone weights (4 per vertex)
+        uint32_t bone_count = 0;                     // Total bones in this mesh
     };
 
     class Mesh : public IResource
@@ -128,6 +139,12 @@ namespace spartan
         RHI_AccelerationStructure* GetBlas(uint32_t sub_mesh_index) const;
         bool HasBlas(uint32_t sub_mesh_index) const;
 
+        // skinning
+        bool IsSkinned() const { return m_bone_data.has_value(); }
+        BoneData* GetBoneData() { return m_bone_data.has_value() ? &m_bone_data.value() : nullptr; }
+        const BoneData* GetBoneData() const { return m_bone_data.has_value() ? &m_bone_data.value() : nullptr; }
+        void SetBoneData(BoneData&& data) { m_bone_data = std::move(data); }
+
     private:
         // geometry
         std::vector<RHI_Vertex_PosTexNorTan> m_vertices; // all vertices of a model file
@@ -140,6 +157,9 @@ namespace spartan
 
         // acceleration structures
         std::vector<std::unique_ptr<RHI_AccelerationStructure>> m_blas; // one blas per sub-mesh
+
+        // skinning data (only for skinned meshes)
+        std::optional<BoneData> m_bone_data;
 
         // misc
         std::mutex m_mutex;

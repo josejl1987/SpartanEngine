@@ -128,9 +128,55 @@ namespace spartan
         float tan[3] = { 0, 0, 0 };
     };
 
+    struct RHI_Vertex_PosTexNorTanSkinned
+    {
+        RHI_Vertex_PosTexNorTanSkinned() = default;
+        RHI_Vertex_PosTexNorTanSkinned(
+            const math::Vector3& pos,
+            const math::Vector2& tex,
+            const math::Vector3& nor = math::Vector3::Zero,
+            const math::Vector3& tan = math::Vector3::Zero,
+            const math::Vector4& bone_indices = math::Vector4::Zero,
+            const math::Vector4& bone_weights = math::Vector4::Zero)
+        {
+            this->pos[0] = pos.x;
+            this->pos[1] = pos.y;
+            this->pos[2] = pos.z;
+
+            this->tex[0] = tex.x;
+            this->tex[1] = tex.y;
+
+            this->nor[0] = nor.x;
+            this->nor[1] = nor.y;
+            this->nor[2] = nor.z;
+
+            this->tan[0] = tan.x;
+            this->tan[1] = tan.y;
+            this->tan[2] = tan.z;
+
+            this->bone_indices[0] = bone_indices.x;
+            this->bone_indices[1] = bone_indices.y;
+            this->bone_indices[2] = bone_indices.z;
+            this->bone_indices[3] = bone_indices.w;
+
+            this->bone_weights[0] = bone_weights.x;
+            this->bone_weights[1] = bone_weights.y;
+            this->bone_weights[2] = bone_weights.z;
+            this->bone_weights[3] = bone_weights.w;
+        }
+
+        float pos[3] = { 0, 0, 0 };
+        float tex[2] = { 0, 0 };
+        float nor[3] = { 0, 0, 0 };
+        float tan[3] = { 0, 0, 0 };
+        float bone_indices[4] = { 0, 0, 0, 0 };
+        float bone_weights[4] = { 0, 0, 0, 0 };
+    };
+
     SP_ASSERT_STATIC_IS_TRIVIALLY_COPYABLE(RHI_Vertex_Pos);
     SP_ASSERT_STATIC_IS_TRIVIALLY_COPYABLE(RHI_Vertex_PosTex);
     SP_ASSERT_STATIC_IS_TRIVIALLY_COPYABLE(RHI_Vertex_PosCol);
     SP_ASSERT_STATIC_IS_TRIVIALLY_COPYABLE(RHI_Vertex_Pos2dTexCol8);
     SP_ASSERT_STATIC_IS_TRIVIALLY_COPYABLE(RHI_Vertex_PosTexNorTan);
+    SP_ASSERT_STATIC_IS_TRIVIALLY_COPYABLE(RHI_Vertex_PosTexNorTanSkinned);
 }

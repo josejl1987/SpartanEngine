@@ -358,8 +358,7 @@ namespace spartan
         SP_ASSERT(count_buffer != nullptr);
 
         // lazily create the command signature for indirect indexed draws
-        static ID3D12CommandSignature* command_signature = nullptr;
-        if (!command_signature)
+        if (!RHI_Context::command_signature_draw_indexed_indirect)
         {
             D3D12_INDIRECT_ARGUMENT_DESC arg_desc = {};
             arg_desc.Type                         = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
@@ -369,11 +368,11 @@ namespace spartan
             desc.NumArgumentDescs            = 1;
             desc.pArgumentDescs              = &arg_desc;
 
-            RHI_Context::device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&command_signature));
+            RHI_Context::device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&RHI_Context::command_signature_draw_indexed_indirect));
         }
 
         static_cast<ID3D12GraphicsCommandList*>(m_rhi_resource)->ExecuteIndirect(
-            command_signature,
+            RHI_Context::command_signature_draw_indexed_indirect,
             max_draw_count,
             static_cast<ID3D12Resource*>(args_buffer->GetRhiResource()),
             static_cast<UINT64>(args_offset),
@@ -389,6 +388,34 @@ namespace spartan
         SP_ASSERT(m_state == RHI_CommandListState::Recording);
 
         static_cast<ID3D12GraphicsCommandList*>(m_rhi_resource)->Dispatch(x, y, z);
+    }
+
+    void RHI_CommandList::DispatchIndirect(RHI_Buffer* args_buffer, const uint32_t args_offset)
+    {
+        SP_ASSERT(m_state == RHI_CommandListState::Recording);
+        SP_ASSERT(args_buffer != nullptr);
+
+        if (!RHI_Context::command_signature_dispatch_indirect)
+        {
+            D3D12_INDIRECT_ARGUMENT_DESC arg_desc = {};
+            arg_desc.Type                         = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+
+            D3D12_COMMAND_SIGNATURE_DESC desc = {};
+            desc.ByteStride                  = sizeof(D3D12_DISPATCH_ARGUMENTS);
+            desc.NumArgumentDescs            = 1;
+            desc.pArgumentDescs              = &arg_desc;
+
+            RHI_Context::device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&RHI_Context::command_signature_dispatch_indirect));
+        }
+
+        static_cast<ID3D12GraphicsCommandList*>(m_rhi_resource)->ExecuteIndirect(
+            RHI_Context::command_signature_dispatch_indirect,
+            1,
+            static_cast<ID3D12Resource*>(args_buffer->GetRhiResource()),
+            static_cast<UINT64>(args_offset),
+            nullptr,
+            0
+        );
     }
 
     void RHI_CommandList::TraceRays(const uint32_t width, const uint32_t height)

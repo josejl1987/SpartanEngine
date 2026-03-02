@@ -35,6 +35,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "Components/Camera.h"
 #include "Components/Light.h"
 #include "Components/AudioSource.h"
+#include "Components/Animator.h"
 #include "../Resource/ResourceCache.h"
 #include "../RHI/RHI_Texture.h"
 #include "../Rendering/Renderer.h"
@@ -250,8 +251,10 @@ namespace spartan
             Renderable      ::RegisterForScripting(state_view);
             Physics         ::RegisterForScripting(state_view);
             Light           ::RegisterForScripting(state_view);
+            Animator        ::RegisterForScripting(state_view);
 
             lua_state.new_enum("ComponentType",
+                "Animator",                 ComponentType::Animator,
                 "AudioSource",              ComponentType::AudioSource,
                 "Camera",                   ComponentType::Camera,
                 "Light",                    ComponentType::Light,

@@ -63,6 +63,39 @@ Vertex_PosUvNorTan pull_vertex(uint vertex_id)
     return v;
 }
 
+// Fetches vertex data for indirect draw path, handling both skinned and non-skinned meshes.
+// Returns true if skinned, fills out input_vertex and position_prev_local.
+bool fetch_vertex_indirect(uint vertex_id, uint skinned_vertex_offset, out Vertex_PosUvNorTan input_vertex, out float3 position_prev_local)
+{
+    input_vertex = (Vertex_PosUvNorTan)0;
+    position_prev_local = float3(0.0f, 0.0f, 0.0f);
+
+    bool is_skinned = (_draw.is_skinned == 1);
+    if (is_skinned)
+    {
+        SkinnedVertex skinned = skinning_vertices_out[skinned_vertex_offset + vertex_id];
+
+        input_vertex.position            = float4(skinned.position, 1.0f);
+        input_vertex.uv                  = skinned.uv;
+        input_vertex.normal              = skinned.normal;
+        input_vertex.tangent             = skinned.tangent.xyz;
+        input_vertex.instance_position_x = (min16float)0;
+        input_vertex.instance_position_y = (min16float)0;
+        input_vertex.instance_position_z = (min16float)0;
+        input_vertex.instance_normal_oct = 0;
+        input_vertex.instance_yaw        = 0;
+        input_vertex.instance_scale      = 0;
+
+        position_prev_local = skinned.position_prev;
+    }
+    else
+    {
+        input_vertex = pull_vertex(vertex_id);
+    }
+
+    return is_skinned;
+}
+
 // vertex buffer output
 struct gbuffer_vertex
 {
@@ -350,30 +383,30 @@ gbuffer_vertex transform_to_world_space(Vertex_PosUvNorTan input, uint instance_
 
     gbuffer_vertex vertex;
     vertex.uv_misc.w = instance_id;
-    
+
     // compute UV with tiling and offset
     float2 uv = input.uv * material.tiling + material.offset;
-    
+
     // apply UV inversion: mirror along axis if enabled
     float2 invert_mask = step(0.5f, material.invert_uv);
     uv                 = lerp(uv, 2.0f * floor(uv) + 1.0f - uv, invert_mask);
     vertex.uv_misc.xy  = uv;
-    
+
     // compute width and height percent for grass blade positioning
     float width_percent  = saturate((input.position.x + material.local_width * 0.5f) / material.local_width);
     float height_percent = saturate(input.position.y / material.local_height);
     vertex.uv_misc.z     = height_percent;
     vertex.width_percent = width_percent;
-    
+
     // compose instance transform and apply to base transform
     matrix instance = compose_instance_transform(input.instance_position_x, input.instance_position_y, input.instance_position_z, input.instance_normal_oct, input.instance_yaw, input.instance_scale);
     transform = mul(instance, transform);
     matrix transform_previous = mul(instance, pass_get_transform_previous());
-    
+
     // transform position to world space
     float3 position          = mul(input.position, transform).xyz;
     float3 position_previous = mul(input.position, transform_previous).xyz;
-    
+
     // transform normal and tangent to world space (extract 3x3 rotation/scale matrix)
     vertex.normal  = normalize(mul(input.normal, (float3x3)transform));
     vertex.tangent = normalize(mul(input.tangent, (float3x3)transform));
@@ -382,17 +415,60 @@ gbuffer_vertex transform_to_world_space(Vertex_PosUvNorTan input, uint instance_
     // note: we need to save and restore vertex.normal/tangent because process_world_space modifies them
     // the second call is only for computing position_previous, we don't want to double-transform normals
     vertex_processing::process_world_space(surface, position, vertex, input.position.xyz, transform, instance_id, 0.0f);
-    
+
     // save the correctly transformed normals before computing previous position
     float3 saved_normal  = vertex.normal;
     float3 saved_tangent = vertex.tangent;
-    
+
     // compute previous position (this will incorrectly modify vertex.normal/tangent, but we'll restore them)
     vertex_processing::process_world_space(surface, position_previous, vertex, input.position.xyz, transform_previous, instance_id, -buffer_frame.delta_time);
-    
+
     // restore the correct normals from the current frame
     vertex.normal  = saved_normal;
     vertex.tangent = saved_tangent;
+
+    position_world          = position;
+    position_world_previous = position_previous;
+    return vertex;
+}
+
+// Variant for skinned meshes - uses pre-computed position_prev from skinning shader
+gbuffer_vertex transform_to_world_space_skinned(Vertex_PosUvNorTan input, float3 position_prev_local, uint instance_id, matrix transform, inout float3 position_world, inout float3 position_world_previous)
+{
+    MaterialParameters material = GetMaterial();
+    Surface surface;
+    surface.flags = material.flags;
+
+    gbuffer_vertex vertex;
+    vertex.uv_misc.w = instance_id;
+
+    // compute UV with tiling and offset
+    float2 uv = input.uv * material.tiling + material.offset;
+
+    // apply UV inversion: mirror along axis if enabled
+    float2 invert_mask = step(0.5f, material.invert_uv);
+    uv                 = lerp(uv, 2.0f * floor(uv) + 1.0f - uv, invert_mask);
+    vertex.uv_misc.xy  = uv;
+
+    // set height/width percent to defaults for skinned meshes
+    vertex.uv_misc.z     = 0.0f;
+    vertex.width_percent = 0.0f;
+
+    // compose instance transform and apply to base transform
+    matrix instance = compose_instance_transform(input.instance_position_x, input.instance_position_y, input.instance_position_z, input.instance_normal_oct, input.instance_yaw, input.instance_scale);
+    transform = mul(instance, transform);
+    matrix transform_previous = mul(instance, pass_get_transform_previous());
+
+    // transform skinned positions to world space
+    float3 position          = mul(input.position, transform).xyz;
+    float3 position_previous = mul(float4(position_prev_local, 1.0f), transform_previous).xyz; // Use skinned position_prev
+
+    // transform normal and tangent to world space (extract 3x3 rotation/scale matrix)
+    vertex.normal  = normalize(mul(input.normal, (float3x3)transform));
+    vertex.tangent = normalize(mul(input.tangent, (float3x3)transform));
+
+    // apply world-space effects (no wind animation for skinned meshes usually)
+    vertex_processing::process_world_space(surface, position, vertex, input.position.xyz, transform, instance_id, 0.0f);
 
     position_world          = position;
     position_world_previous = position_previous;

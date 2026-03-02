@@ -226,6 +226,7 @@ namespace spartan
         PosCol,
         PosUv,
         PosUvNorTan,
+        PosUvNorTanSkinned,
         Pos2dUvCol8,
         Max
     };
@@ -340,12 +341,14 @@ namespace spartan
     // allows specifying barrier scope instead of conservative auto-deduction
     enum class RHI_Barrier_Scope : uint8_t
     {
-        Auto,     // deduce from layout/usage (default, conservative)
-        Graphics, // vertex/fragment/tessellation stages
-        Compute,  // compute stage only
-        Transfer, // transfer stage only
-        Fragment, // fragment stage only
-        All       // all commands (most conservative, explicit)
+        Auto,                     // deduce from layout/usage (default, conservative)
+        Graphics,                 // vertex/fragment/tessellation stages
+        Compute,                  // compute stage only
+        Transfer,                 // transfer stage only
+        Fragment,                 // fragment stage only
+        Indirect,                 // indirect command execution (dispatch/draw)
+        AccelerationStructureBuild, // BLAS/TLAS build operations
+        All                       // all commands (most conservative, explicit)
     };
 
     // unified barrier description - can represent any barrier type

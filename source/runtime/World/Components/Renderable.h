@@ -24,10 +24,13 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //= INCLUDES =================================
 #include "Component.h"
 #include <vector>
+#include <memory>
+#include <cfloat>
 #include "../../Math/Matrix.h"
 #include "../../Math/BoundingBox.h"
 #include "../Geometry/Mesh.h"
 #include "../Rendering/Renderer_Definitions.h"
+#include "../RHI/RHI_AccelerationStructure.h"
 #include "../../Rendering/Instance.h"
 //============================================
 
@@ -58,6 +61,7 @@ namespace spartan
         // mesh
         void SetMesh(Mesh* mesh, const uint32_t sub_mesh_index = 0);
         void SetMesh(const MeshType type);
+        Mesh* GetMesh() const { return m_mesh; }
         void GetGeometry(std::vector<uint32_t>* indices, std::vector<RHI_Vertex_PosTexNorTan>* vertices) const;
         uint32_t GetLodCount() const;
         uint32_t GetLodIndex() const { return m_lod_index; }
@@ -112,6 +116,32 @@ namespace spartan
         uint64_t GetPreviousLights() const      { return m_previous_lights; }
         void SetPreviousLights(uint64_t lights) { m_previous_lights = lights; }
 
+        // skinning
+        bool IsSkinned() const { return m_is_skinned; }
+        void SetSkinned(const bool skinned);
+
+        // Input buffer offset (set once at mesh upload time, permanent)
+        uint32_t GetSkinningVertexInputOffset() const { return m_skinning_vertex_input_offset; }
+        void SetSkinningVertexInputOffset(const uint32_t offset) { m_skinning_vertex_input_offset = offset; }
+
+        // Vertex count for this skinned mesh (set once at mesh upload time)
+        uint32_t GetSkinningVertexCount() const { return m_skinning_vertex_count; }
+        void SetSkinningVertexCount(const uint32_t count) { m_skinning_vertex_count = count; }
+
+        // Output buffer offset (set per-frame by Pass_GpuSkinning job builder)
+        uint32_t GetSkinningVertexOutputOffset() const { return m_skinning_vertex_output_offset; }
+        void SetSkinningVertexOutputOffset(const uint32_t offset) { m_skinning_vertex_output_offset = offset; }
+
+        // Bone palette offset (set per-frame from bone palette allocator)
+        uint32_t GetSkinningBoneOffset() const { return m_skinning_bone_offset; }
+        void SetSkinningBoneOffset(const uint32_t offset) { m_skinning_bone_offset = offset; }
+
+        uint32_t GetBoneCount() const { return m_bone_count; }
+        void SetBoneCount(const uint32_t count) { m_bone_count = count; }
+
+        RHI_AccelerationStructure* GetSkinnedBlas() const { return m_skinned_blas.get(); }
+        void SetSkinnedBlas(std::unique_ptr<RHI_AccelerationStructure> blas) { m_skinned_blas = std::move(blas); }
+
     private:
         void UpdateAabb();
         void UpdateFrustumAndDistanceCulling();
@@ -146,5 +176,14 @@ namespace spartan
         bool m_is_visible           = false;
         uint32_t m_lod_index        = 0;
         uint64_t m_previous_lights  = 0; // lights whose frustums this renderable was in last frame
+
+        // skinning (for GPU-skinned meshes with per-entity BLAS)
+        bool m_is_skinned                      = false;
+        uint32_t m_skinning_vertex_input_offset = 0;  // global offset into SkinningGeometryBuffer (set at load)
+        uint32_t m_skinning_vertex_count        = 0;  // vertex count for this mesh (set at load)
+        uint32_t m_skinning_vertex_output_offset = 0; // per-frame offset into SkinningVerticesOut
+        uint32_t m_skinning_bone_offset         = 0;  // per-frame offset into skinning_bones buffer
+        uint32_t m_bone_count                   = 0;  // number of bones for this mesh
+        std::unique_ptr<RHI_AccelerationStructure> m_skinned_blas;  // per-entity BLAS for skinned mesh
     };
 }

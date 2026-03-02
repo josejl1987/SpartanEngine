@@ -151,11 +151,38 @@ namespace spartan
                     return VK_PIPELINE_STAGE_2_TRANSFER_BIT;
                 case RHI_Barrier_Scope::Fragment:
                     return VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                case RHI_Barrier_Scope::Indirect:
+                    return VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+                case RHI_Barrier_Scope::AccelerationStructureBuild:
+                    return VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
                 case RHI_Barrier_Scope::All:
                     return VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
                 case RHI_Barrier_Scope::Auto:
                 default:
                     return VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; // auto handled by layout-based deduction
+            }
+        }
+
+        // convert scope enum to vulkan access masks for buffer barriers
+        VkAccessFlags2 scope_to_access_mask(RHI_Barrier_Scope scope, bool is_destination)
+        {
+            switch (scope)
+            {
+                case RHI_Barrier_Scope::Transfer:
+                    return is_destination ? VK_ACCESS_2_TRANSFER_READ_BIT : VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                case RHI_Barrier_Scope::Compute:
+                    return is_destination ? VK_ACCESS_2_SHADER_READ_BIT : VK_ACCESS_2_SHADER_WRITE_BIT;
+                case RHI_Barrier_Scope::Indirect:
+                    return VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+                case RHI_Barrier_Scope::AccelerationStructureBuild:
+                    return is_destination ? VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR : VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+                case RHI_Barrier_Scope::Graphics:
+                case RHI_Barrier_Scope::Fragment:
+                    return is_destination ? VK_ACCESS_2_SHADER_READ_BIT : VK_ACCESS_2_SHADER_WRITE_BIT;
+                case RHI_Barrier_Scope::All:
+                case RHI_Barrier_Scope::Auto:
+                default:
+                    return VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
             }
         }
 
@@ -634,7 +661,7 @@ namespace spartan
         }
 
         // wait
-        uint64_t timeout_nanoseconds = 10'000'000'000; // 10 seconds
+        uint64_t timeout_nanoseconds = 60'000'000'000; // 60 seconds
         m_rendering_complete_semaphore_timeline->Wait(timeout_nanoseconds);
         m_state = RHI_CommandListState::Idle;
 
@@ -810,7 +837,7 @@ namespace spartan
                 color_attachment.sType                     = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
                 color_attachment.imageView                 = static_cast<VkImageView>(swapchain->GetRhiRtv());
                 color_attachment.imageLayout               = vulkan_image_layout[static_cast<uint8_t>(RHI_Image_Layout::Attachment)];
-                color_attachment.loadOp                    = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                color_attachment.loadOp                    = VK_ATTACHMENT_LOAD_OP_LOAD;
                 color_attachment.storeOp                   = VK_ATTACHMENT_STORE_OP_STORE;
     
                 SP_ASSERT(color_attachment.imageView != nullptr);
@@ -1108,6 +1135,19 @@ namespace spartan
         PreDraw();
 
         vkCmdDispatch(static_cast<VkCommandBuffer>(m_rhi_resource), x, y, z);
+    }
+
+    void RHI_CommandList::DispatchIndirect(RHI_Buffer* args_buffer, const uint32_t args_offset)
+    {
+        SP_ASSERT(m_state == RHI_CommandListState::Recording);
+        SP_ASSERT(args_buffer != nullptr);
+
+        PreDraw();
+
+        VkBuffer buffer = static_cast<VkBuffer>(args_buffer->GetRhiResource());
+        VkDeviceSize offset = static_cast<VkDeviceSize>(args_offset);
+
+        vkCmdDispatchIndirect(static_cast<VkCommandBuffer>(m_rhi_resource), buffer, offset);
     }
 
     void RHI_CommandList::TraceRays(const uint32_t width, const uint32_t height)
@@ -1777,7 +1817,7 @@ namespace spartan
         descriptor_sets::bind_dynamic = true;
     }
 
-    void RHI_CommandList::SetBuffer(const uint32_t slot, RHI_Buffer* buffer) const
+    void RHI_CommandList::SetBuffer(const uint32_t slot, RHI_Buffer* buffer, bool is_uav /*= true*/) const
     {
         SP_ASSERT(m_state == RHI_CommandListState::Recording);
 
@@ -1787,7 +1827,7 @@ namespace spartan
             return;
         }
 
-        m_descriptor_layout_current->SetBuffer(slot, buffer);
+        m_descriptor_layout_current->SetBuffer(slot, buffer, is_uav);
 
         // todo: detect if there are changes, otherwise don't bother binding
         descriptor_sets::bind_dynamic = true;
@@ -2546,11 +2586,11 @@ namespace spartan
                     vk_barrier.srcStageMask           = (pending.barrier.scope_src != RHI_Barrier_Scope::Auto)
                         ? barrier_helpers::scope_to_stages(pending.barrier.scope_src)
                         : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                    vk_barrier.srcAccessMask          = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+                    vk_barrier.srcAccessMask          = barrier_helpers::scope_to_access_mask(pending.barrier.scope_src, false);
                     vk_barrier.dstStageMask           = (pending.barrier.scope_dst != RHI_Barrier_Scope::Auto)
                         ? barrier_helpers::scope_to_stages(pending.barrier.scope_dst)
                         : barrier_helpers::scope_to_stages(pso_scope_hint);
-                    vk_barrier.dstAccessMask          = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+                    vk_barrier.dstAccessMask          = barrier_helpers::scope_to_access_mask(pending.barrier.scope_dst, true);
                     vk_barrier.srcQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
                     vk_barrier.dstQueueFamilyIndex    = VK_QUEUE_FAMILY_IGNORED;
                     vk_barrier.buffer                 = static_cast<VkBuffer>(pending.barrier.buffer->GetRhiResource());

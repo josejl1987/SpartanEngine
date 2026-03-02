@@ -21,66 +21,66 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #pragma once
 
-//= INCLUDES =====================
+//= INCLUDES ===============
 #include "../Resource/IResource.h"
+#include "../Math/Vector3.h"
+#include "../Math/Quaternion.h"
 #include "../Math/Matrix.h"
-//================================
+//==========================
 
 namespace spartan
 {
-    struct AnimationVertexWeight
+    // Animation keyframe (template supports Vector3 and Quaternion)
+    template<typename T>
+    struct AnimationKey
     {
-        uint32_t vertexID;
-        float weight;
+        float time;
+        T value;
     };
 
-    struct AnimationBone
+    // Single bone's animation track
+    struct AnimationChannel
     {
-        std::string name;
-        std::vector<AnimationVertexWeight> vertexWeights;
-        math::Matrix offset;
-    };
-
-    struct KeyVector
-    {
-        double time;
-        math::Vector3 value;
-    };
-
-    struct KeyQuaternion
-    {
-        double time;
-        math::Quaternion value;
-    };
-
-    struct AnimationNode
-    {
-        std::string name;
-        std::vector<KeyVector> positionFrames;
-        std::vector<KeyQuaternion> rotationFrames;
-        std::vector<KeyVector> scaleFrames;
+        std::string bone_name;
+        std::vector<AnimationKey<math::Vector3>> position_keys;
+        std::vector<AnimationKey<math::Quaternion>> rotation_keys;
+        std::vector<AnimationKey<math::Vector3>> scale_keys;
     };
 
     class Animation : public IResource
     {
     public:
-        Animation();
+        Animation() : IResource(ResourceType::Animation) {}
         ~Animation() = default;
 
-        // iresource
-        void LoadFromFile(const std::string& filePath) override;
-        void SaveToFile(const std::string& filePath) override;
+        // IResource
+        void LoadFromFile(const std::string& file_path) override;
+        void SaveToFile(const std::string& file_path) override;
 
-        void SetObjectName(const std::string& name)   { m_object_name = name; }
-        void SetDuration(double duration)       { m_duration = duration; }
-        void SetTicksPerSec(double ticksPerSec) { m_ticksPerSec = ticksPerSec; }
+        // Animation data
+        void AddChannel(const std::string& bone_name,
+                        const std::vector<AnimationKey<math::Vector3>>& position_keys,
+                        const std::vector<AnimationKey<math::Quaternion>>& rotation_keys,
+                        const std::vector<AnimationKey<math::Vector3>>& scale_keys);
+
+        // Animation playback
+        math::Matrix SampleBone(const std::string& bone_name, float time_ticks) const;
+
+        // Properties
+        void SetDurationInSeconds(float duration) { m_duration_in_seconds = duration; }
+        float GetDurationInSeconds() const { return m_duration_in_seconds; }
+        void SetTicksPerSecond(double ticks) { m_ticks_per_second = ticks; }
+        double GetTicksPerSecond() const { return m_ticks_per_second; }
+        const std::vector<AnimationChannel>& GetChannels() const { return m_channels; }
 
     private:
-        std::string m_object_name;
-        double m_duration    = 0;
-        double m_ticksPerSec = 0;
+        // Interpolation helpers
+        math::Vector3 LerpV3(const std::vector<AnimationKey<math::Vector3>>& keys, float t) const;
+        math::Quaternion SlerpQ(const std::vector<AnimationKey<math::Quaternion>>& keys, float t) const;
 
-        // Each channel controls a single node
-        std::vector<AnimationNode> m_channels;
+        // Animation data
+        std::vector<AnimationChannel> m_channels;
+        float m_duration_in_seconds = 0.0f;
+        double m_ticks_per_second = 0.0;
     };
 }

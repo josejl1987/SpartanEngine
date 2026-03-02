@@ -201,13 +201,20 @@ namespace spartan
     // per-draw data for gpu-driven rendering (indexed by draw_id in shaders)
     struct Sb_DrawData
     {
-        math::Matrix transform;          // current world transform
-        math::Matrix transform_previous; // previous frame world transform
-        uint32_t material_index = 0;     // index into the bindless material parameters array
-        uint32_t is_transparent = 0;     // transparency flag
-        uint32_t aabb_index     = 0;     // index into the aabb buffer for culling
-        uint32_t padding        = 0;
+        math::Matrix transform;            // current world transform
+        math::Matrix transform_previous;   // previous frame world transform
+        uint32_t material_index = 0;       // index into the bindless material parameters array
+        uint32_t is_transparent = 0;       // transparency flag
+        uint32_t aabb_index     = 0;       // index into the aabb buffer for culling
+        uint32_t is_skinned     = 0;       // 0 = static mesh, 1 = skinned mesh
+
+        // Skinning (only valid when is_skinned == 1)
+        uint32_t bone_offset           = 0; // start index into sb_skinning_bones
+        uint32_t skinned_vertex_offset = 0; // start index into uav_skinning_vertices_out
+        uint32_t padding0              = 0;
+        uint32_t padding1              = 0;
     };
+    static_assert(sizeof(Sb_DrawData) == 160, "Sb_DrawData size mismatch - update shader");
 
     // gpu particle (matches hlsl Particle struct, 64 bytes)
     struct Sb_Particle
@@ -243,4 +250,64 @@ namespace spartan
         float padding1         = 0.0f;
         float padding2         = 0.0f;
     };
+
+
+    // One bone: two 3x4 row-major matrices (current + previous frame).
+    // 96 bytes — 25% smaller than two full 4x4 matrices.
+    struct alignas(16) Sb_SkinningBone
+    {
+        float r[3][4];      // current frame  (row 0..2, 4 floats each)
+        float r_prev[3][4]; // previous frame
+    };
+    static_assert(sizeof(Sb_SkinningBone) == 96, "Sb_SkinningBone size mismatch");
+
+    // One entry per skinned draw call (indexed by DrawData::bone_palette_index)
+    struct Sb_BonePalette
+    {
+        uint32_t bone_matrix_offset;
+        uint32_t bone_count;
+        uint32_t padding[2];
+    };
+
+    // One skinning job (one skinned mesh draw call).
+    // jobs[0] is a header: vertex_start = job_count, vertex_count = total_vertices.
+    struct alignas(16) Sb_SkinningJob
+    {
+        uint32_t vertex_start;      // global vertex start (header: job_count)
+        uint32_t vertex_count;      // vertex count        (header: total_vertices)
+        uint32_t vertex_in_offset;  // offset into skinning_vertices_in
+        uint32_t vertex_out_offset; // offset into skinning_vertices_out
+        uint32_t bone_offset;       // start offset into skinning_bones
+        uint32_t pad0, pad1, pad2;
+    };
+    static_assert(sizeof(Sb_SkinningJob) == 32, "Sb_SkinningJob size mismatch");
+
+
+    // Indirect compute dispatch arguments (matches VkDispatchIndirectCommand).
+    struct Sb_SkinningDispatchArgs
+    {
+        uint32_t x = 1;
+        uint32_t y = 1;
+        uint32_t z = 1;
+    };
+    static_assert(sizeof(Sb_SkinningDispatchArgs) == 12, "Sb_SkinningDispatchArgs size mismatch");
+
+    // Output vertex written by the compute shader, read by raster + BLAS build.
+    // Position MUST be at offset 0 — BLAS geometry descriptor points here.
+    struct alignas(16) Sb_SkinnedVertex
+    {
+        math::Vector3 position;      // offset  0
+        float         padding0;      // offset 12
+        math::Vector3 position_prev; // offset 16
+        float         padding1;      // offset 28
+        math::Vector3 normal;        // offset 32
+        float         padding2;      // offset 44
+        math::Vector4 tangent;       // offset 48
+        math::Vector2 uv;            // offset 64
+        float         padding3;      // offset 72
+        float         padding4;      // offset 76
+    };
+    static_assert(sizeof(Sb_SkinnedVertex) == 80, "Sb_SkinnedVertex size mismatch - update shader");
+
+
 }

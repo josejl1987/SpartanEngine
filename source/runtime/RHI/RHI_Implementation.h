@@ -398,6 +398,8 @@ namespace spartan
         // api specific
         #if defined(API_GRAPHICS_D3D12)
             static ID3D12Device* device;
+            static ID3D12CommandSignature* command_signature_dispatch_indirect;
+            static ID3D12CommandSignature* command_signature_draw_indexed_indirect;
         #elif defined(API_GRAPHICS_VULKAN)
             static VkInstance instance;
             static VkDevice device;

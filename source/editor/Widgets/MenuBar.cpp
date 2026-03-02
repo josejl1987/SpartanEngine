@@ -343,7 +343,7 @@ namespace
                     }
                 };
                 toolbar_button(
-                    spartan::ResourceCache::GetIcon(spartan::IconType::Play), "Play",
+                    spartan::ResourceCache::GetIcon(spartan::IconType::Play).get(), "Play",
                     is_playing,
                     toggle_playing,
                     nullptr,
@@ -369,7 +369,7 @@ namespace
                     {
                         spartan::Renderer::Screenshot();
                     };
-                    toolbar_button(spartan::ResourceCache::GetIcon(spartan::IconType::Screenshot), "Takes a screenshot and saves it to the executable's folder",
+                    toolbar_button(spartan::ResourceCache::GetIcon(spartan::IconType::Screenshot).get(), "Takes a screenshot and saves it to the executable's folder",
                         screenshot_visible,
                         screenshot_press,
                         nullptr,
@@ -389,7 +389,7 @@ namespace
                             SP_LOG_WARNING("RenderDoc integration is disabled. To enable, go to \"Debugging.h\", and set \"is_renderdoc_enabled\" to \"true\"");
                         }
                     };
-                    toolbar_button(spartan::ResourceCache::GetIcon(spartan::IconType::RenderDoc), "Captures the next frame and then launches RenderDoc",
+                    toolbar_button(spartan::ResourceCache::GetIcon(spartan::IconType::RenderDoc).get(), "Captures the next frame and then launches RenderDoc",
                         renderdoc_visible,
                         renderdoc_press,
                         nullptr
@@ -398,7 +398,7 @@ namespace
                     // world selection
                     static auto world_visible = [](Widget*) { return GeneralWindows::GetVisibilityWorlds(); };
                     static auto world_press   = [](Widget*) { GeneralWindows::SetVisibilityWorlds(!GeneralWindows::GetVisibilityWorlds()); };
-                    toolbar_button(spartan::ResourceCache::GetIcon(spartan::IconType::Terrain), "World selection window",
+                    toolbar_button(spartan::ResourceCache::GetIcon(spartan::IconType::Terrain).get(), "World selection window",
                         world_visible,
                         world_press,
                         nullptr
@@ -500,11 +500,11 @@ void MenuBar::Initialize(Editor* _editor)
     editor      = _editor;
     file_dialog = make_unique<FileDialog>(true, FileDialog_Type_FileSelection, FileDialog_Op_Open, FileDialog_Filter_World);
 
-    buttons_toolbar::widgets[spartan::ResourceCache::GetIcon(spartan::IconType::Profiler)]      = editor->GetWidget<Profiler>();
-    buttons_toolbar::widgets[spartan::ResourceCache::GetIcon(spartan::IconType::ResourceCache)] = editor->GetWidget<ResourceViewer>();
-    buttons_toolbar::widgets[spartan::ResourceCache::GetIcon(spartan::IconType::Shader)]        = editor->GetWidget<ShaderEditor>();
-    buttons_toolbar::widgets[spartan::ResourceCache::GetIcon(spartan::IconType::Gear)]          = editor->GetWidget<RenderOptions>();
-    buttons_toolbar::widgets[spartan::ResourceCache::GetIcon(spartan::IconType::Texture)]       = editor->GetWidget<TextureViewer>();
+    buttons_toolbar::widgets[spartan::ResourceCache::GetIcon(spartan::IconType::Profiler).get()]      = editor->GetWidget<Profiler>();
+    buttons_toolbar::widgets[spartan::ResourceCache::GetIcon(spartan::IconType::ResourceCache).get()] = editor->GetWidget<ResourceViewer>();
+    buttons_toolbar::widgets[spartan::ResourceCache::GetIcon(spartan::IconType::Shader).get()]        = editor->GetWidget<ShaderEditor>();
+    buttons_toolbar::widgets[spartan::ResourceCache::GetIcon(spartan::IconType::Gear).get()]          = editor->GetWidget<RenderOptions>();
+    buttons_toolbar::widgets[spartan::ResourceCache::GetIcon(spartan::IconType::Texture).get()]       = editor->GetWidget<TextureViewer>();
 
     spartan::Engine::SetFlag(spartan::EngineMode::Playing, false);
 }
@@ -538,7 +538,7 @@ void MenuBar::Tick()
             // logo
             ImGui::SetCursorPosX(padding_x);
             ImGui::SetCursorPosY(icon_y);
-            spartan::RHI_Texture* logo = spartan::ResourceCache::GetIcon(spartan::IconType::Logo);
+            spartan::RHI_Texture* logo = spartan::ResourceCache::GetIcon(spartan::IconType::Logo).get();
             if (logo)
             {
                 ImGui::Image(reinterpret_cast<ImTextureID>(logo), ImVec2(icon_size, icon_size));

@@ -88,9 +88,10 @@ namespace spartan
         }
     }
 
-    void RHI_DescriptorSetLayout::SetBuffer(uint32_t slot, RHI_Buffer* buffer)
+    void RHI_DescriptorSetLayout::SetBuffer(uint32_t slot, RHI_Buffer* buffer, bool is_uav /*= true*/)
     {
-        uint32_t actual_slot = slot + rhi_shader_register_shift_u;
+        uint32_t shift = is_uav ? rhi_shader_register_shift_u : rhi_shader_register_shift_t;
+        uint32_t actual_slot = slot + shift;
         if (RHI_DescriptorBinding* binding = FindBinding(actual_slot))
         {
             binding->resource       = static_cast<void*>(buffer);

@@ -91,6 +91,11 @@ namespace spartan
     array<Sb_Aabb, rhi_max_array_size> Renderer::m_bindless_aabbs;
     unique_ptr<RHI_AccelerationStructure> m_tlas;
     uint32_t Renderer::m_count_active_lights = 0;
+    Renderer::SkinningState Renderer::m_skinning_state;
+    unique_ptr<RHI_Buffer> Renderer::m_sb_bone_matrices;
+    unique_ptr<RHI_Buffer> Renderer::m_sb_bone_palettes;
+    unique_ptr<RHI_Buffer> Renderer::m_sb_skinned_vertices;
+    void* Renderer::m_bone_matrix_mapped = nullptr;
 
     namespace
     {
@@ -832,6 +837,9 @@ namespace spartan
         bool is_instanced    = draw_call.instance_count > 1;
         bool is_alpha_tested = material->IsAlphaTested();
         bool is_non_standard_cull = static_cast<RHI_CullMode>(material->GetProperty(MaterialProperty::CullMode)) != RHI_CullMode::Back;
+        // Skinned meshes MUST use indirect path for GPU skinning to work
+        if (draw_call.renderable->IsSkinned())
+            return false;
         return is_tessellated || is_instanced || is_alpha_tested || is_non_standard_cull;
     }
 
@@ -860,7 +868,11 @@ namespace spartan
         entry.material_index     = material_index;
         entry.is_transparent     = is_transparent;
         entry.aabb_index         = 0;
-        entry.padding            = 0;
+        entry.is_skinned         = 0;
+        entry.bone_offset        = 0;
+        entry.skinned_vertex_offset = 0;
+        entry.padding0           = 0;
+        entry.padding1           = 0;
 
         // the draw data buffer is a single large allocation partitioned into per-frame regions;
         // each frame writes to its own region so there is no write-after-read race with the gpu
@@ -1271,7 +1283,7 @@ namespace spartan
                 uint32_t idx = m_indirect_draw_count++;
                 if (idx >= rhi_max_array_size)
                     break;
-
+                
                 Sb_IndirectDrawArgs& args = m_indirect_draw_args[idx];
                 args.index_count          = renderable->GetIndexCount(dc.lod_index);
                 args.instance_count       = dc.instance_count;
@@ -1288,7 +1300,11 @@ namespace spartan
                 data.material_index     = material->GetIndex();
                 data.is_transparent     = 0;
                 data.aabb_index         = aabb_frame_offset + m_draw_calls_prepass_count + idx;
-                data.padding            = 0;
+                data.is_skinned         = renderable->IsSkinned() ? 1u : 0u;
+                data.bone_offset        = renderable->GetSkinningBoneOffset();
+                data.skinned_vertex_offset = renderable->GetSkinningVertexOutputOffset();
+                data.padding0           = 0;
+                data.padding1           = 0;
             }
         }
 
@@ -1473,6 +1489,82 @@ namespace spartan
                 last_instance_count = 0;
             }
         }
+    }
+
+    void Renderer::ResetBonePaletteState()
+    {
+        m_skinning_state.reset();
+    }
+
+    uint32_t Renderer::AllocateBoneSlots(uint32_t count)
+    {
+        uint32_t offset = m_skinning_state.bone_offset;
+
+        // Check for overflow
+        if (offset + count > skinning_max_bone_matrices)
+        {
+            SP_LOG_ERROR("Bone palette overflow: %d slots requested, %d available", count, skinning_max_bone_matrices - offset);
+            return ~0u; // Invalid offset
+        }
+
+        m_skinning_state.bone_offset += count;
+        m_skinning_state.bones_used += count;
+
+        return offset;
+    }
+
+    void Renderer::UploadBoneMatrices(RHI_CommandList* cmd_list, uint32_t offset, const std::vector<math::Matrix>& current, const std::vector<math::Matrix>& previous)
+    {
+        if (current.empty() || previous.empty())
+        {
+            SP_LOG_WARNING("Skipping bone upload: current=%zu, previous=%zu", current.size(), previous.size());
+            return;
+        }
+
+        if (current.size() != previous.size())
+            return;
+
+        // Get current frame resource
+        FrameResource& frame = m_frame_resources[m_frame_resource_index];
+
+        // Pack matrices into Sb_SkinningBone format (two 3x4 row-major matrices)
+        // 
+        // Matrix Layout Assumptions:
+        // - math::Matrix is stored in column-major order (standard for graphics)
+        // - Memory layout: [m00, m10, m20, m30, m01, m11, m21, m31, m02, m12, m22, m32, m03, m13, m23, m33]
+        // - Index formula: element at (row, col) = data[col * 4 + row]
+        // - We pack rows 0-2 (3x4 matrix) for GPU skinning, skipping row 3 (0,0,0,1 for affine transforms)
+        //
+        // If math::Matrix layout changes, these indices must be updated:
+        // - current_data[0]  = m00, current_data[4]  = m01, current_data[8]  = m02, current_data[12] = m03
+        // - current_data[1]  = m10, current_data[5]  = m11, current_data[9]  = m12, current_data[13] = m13
+        // - current_data[2]  = m20, current_data[6]  = m21, current_data[10] = m22, current_data[14] = m23
+        std::vector<Sb_SkinningBone> bone_data;
+        bone_data.reserve(current.size());
+
+        for (size_t i = 0; i < current.size(); i++)
+        {
+            Sb_SkinningBone bone;
+
+            const float* current_data = &current[i].m00;
+            const float* prev_data = &previous[i].m00;
+
+            // Pack current frame matrix (rows 0-2) into row-major 3x4 format
+            // Access pattern: col * 4 + row for column-major source
+            bone.r[0][0] = current_data[0];  bone.r[0][1] = current_data[4];  bone.r[0][2] = current_data[8];  bone.r[0][3] = current_data[12];
+            bone.r[1][0] = current_data[1];  bone.r[1][1] = current_data[5];  bone.r[1][2] = current_data[9];  bone.r[1][3] = current_data[13];
+            bone.r[2][0] = current_data[2];  bone.r[2][1] = current_data[6];  bone.r[2][2] = current_data[10]; bone.r[2][3] = current_data[14];
+
+            // Pack previous frame matrix (rows 0-2) into row-major 3x4 format
+            bone.r_prev[0][0] = prev_data[0];  bone.r_prev[0][1] = prev_data[4];  bone.r_prev[0][2] = prev_data[8];  bone.r_prev[0][3] = prev_data[12];
+            bone.r_prev[1][0] = prev_data[1];  bone.r_prev[1][1] = prev_data[5];  bone.r_prev[1][2] = prev_data[9];  bone.r_prev[1][3] = prev_data[13];
+            bone.r_prev[2][0] = prev_data[2];  bone.r_prev[2][1] = prev_data[6];  bone.r_prev[2][2] = prev_data[10]; bone.r_prev[2][3] = prev_data[14];
+
+            bone_data.push_back(bone);
+        }
+
+        // Upload to GPU at offset
+        cmd_list->UpdateBuffer(frame.skinning_bones.get(), offset * sizeof(Sb_SkinningBone), bone_data.size() * sizeof(Sb_SkinningBone), bone_data.data());
     }
 
     void Renderer::UpdateShadowAtlas()

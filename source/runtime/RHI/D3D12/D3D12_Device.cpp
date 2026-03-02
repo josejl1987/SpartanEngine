@@ -391,6 +391,18 @@ namespace spartan
         if (queues::compute) { queues::compute->Release(); queues::compute = nullptr; }
         if (queues::copy) { queues::copy->Release(); queues::copy = nullptr; }
 
+        // destroy command signatures
+        if (RHI_Context::command_signature_dispatch_indirect)
+        {
+            RHI_Context::command_signature_dispatch_indirect->Release();
+            RHI_Context::command_signature_dispatch_indirect = nullptr;
+        }
+        if (RHI_Context::command_signature_draw_indexed_indirect)
+        {
+            RHI_Context::command_signature_draw_indexed_indirect->Release();
+            RHI_Context::command_signature_draw_indexed_indirect = nullptr;
+        }
+
         // destroy device
         if (RHI_Context::device)
         {

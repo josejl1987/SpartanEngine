@@ -127,7 +127,19 @@ namespace spartan
                 flags_memory = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
             }
             VkBufferUsageFlags flags_usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+            // add device address bit if ray tracing is supported (needed for acceleration structure builds)
+            if (RHI_Device::IsSupportedRayTracing())
+            {
+                flags_usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+                flags_usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+            }
             RHI_Device::MemoryBufferCreate(m_rhi_resource, m_object_size, flags_usage, flags_memory, data, m_object_name.c_str());
+
+            // query device address if ray tracing is supported (for use in BLAS builds)
+            if (m_rhi_resource && RHI_Device::IsSupportedRayTracing())
+            {
+                m_device_address = RHI_Device::GetBufferDeviceAddress(m_rhi_resource);
+            }
         }
         else if (m_type == RHI_Buffer_Type::Constant)
         {

@@ -28,6 +28,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../World/Components/Light.h"
 #include "../World/Components/AudioSource.h"
 #include "../World/Components/ParticleSystem.h"
+#include "../World/Components/Animator.h"
 #include "../RHI/RHI_CommandList.h"
 #include "../RHI/RHI_Buffer.h"
 #include "../RHI/RHI_Shader.h"
@@ -142,8 +143,94 @@ namespace spartan
             // graphics phase 1: geometry
             {
                 bool is_transparent = false;
-                Pass_HiZ(cmd_list_graphics_present);
-                Pass_IndirectCull(cmd_list_graphics_present);
+            Pass_HiZ(cmd_list_graphics_present);
+            Pass_IndirectCull(cmd_list_graphics_present);
+
+            // Fix READ_AFTER_WRITE hazard for indirect_draw_count
+            cmd_list_graphics_present->InsertBarrier(RHI_Barrier::buffer_sync(m_frame_resources[m_frame_resource_index].indirect_draw_count.get()).from(RHI_Barrier_Scope::Transfer).to(RHI_Barrier_Scope::Indirect));
+            cmd_list_graphics_present->FlushBarriers();
+
+            // UPDATE ALL ANIMATORS AND UPLOAD BONE MATRICES
+                // Note: This iterates World::GetEntities() without locking. Ensure no entity
+                // modifications occur during rendering. If entity modification is needed,
+                // cache animators in a local vector first.
+                {
+                    // Reset bone palette state for new frame
+                    ResetBonePaletteState();
+
+                    // First pass: tick all animators
+                    for (Entity* entity : World::GetEntities())
+                    {
+                        if (!entity || !entity->GetActive())
+                            continue;
+
+                        if (Animator* animator = entity->GetComponent<Animator>())
+                        {
+                            animator->Tick();
+                        }
+                    }
+
+                    // Second pass: allocate bone palettes and vertex output offsets
+                    // IMPORTANT: This must happen BEFORE UpdateDrawCalls so skinned_vertex_offset is valid
+                    for (Entity* entity : World::GetEntities())
+                    {
+                        if (!entity || !entity->GetActive())
+                            continue;
+
+                        Renderable* renderable = entity->GetComponent<Renderable>();
+                        if (!renderable)
+                            continue;
+                            
+                        // Get Animator from root entity (where it's typically stored)
+                        Entity* root_entity = entity->GetRoot();
+                        Animator* animator = root_entity ? root_entity->GetComponent<Animator>() : nullptr;
+                        
+                        // Also check current entity if root doesn't have animator
+                        if (!animator)
+                            animator = entity->GetComponent<Animator>();
+
+                        if (animator && renderable && animator->IsPlaying())
+                        {
+                            const Mesh* mesh = renderable->GetMesh();
+                            if (mesh && mesh->IsSkinned())
+                            {
+                                const BoneData* bone_data = mesh->GetBoneData();
+                                if (bone_data)
+                                {
+                                    uint32_t bone_count = bone_data->bone_count;
+                                    uint32_t vertex_count = renderable->GetSkinningVertexCount();
+
+                                    // Allocate bone palette slots
+                                    uint32_t bone_offset = AllocateBoneSlots(bone_count);
+                                    if (bone_offset != ~0u && vertex_count > 0)
+                                    {
+                                        // Upload bone matrices to GPU
+                                        UploadBoneMatrices(
+                                            cmd_list_graphics_present,
+                                            bone_offset,
+                                            animator->GetBoneMatrices(),
+                                            animator->GetBoneMatricesPrev()
+                                        );
+
+                                        // Store bone palette offset in renderable
+                                        renderable->SetSkinningBoneOffset(bone_offset);
+                                        
+                                        // Allocate and store vertex output offset
+                                        // This must be done here so UpdateDrawCalls can read it
+                                        uint32_t vertex_out_offset = m_skinning_state.vertex_output_offset;
+                                        m_skinning_state.vertex_output_offset += vertex_count;
+                                        renderable->SetSkinningVertexOutputOffset(vertex_out_offset);
+                                        
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // GPU skinning MUST happen before depth/gbuffer to skin vertices
+                Pass_GpuSkinning(cmd_list_graphics_present);
+                
                 Pass_Depth_Prepass(cmd_list_graphics_present);
                 Pass_GBuffer(cmd_list_graphics_present, is_transparent);
             }
@@ -162,6 +249,7 @@ namespace spartan
 
             // async compute: overlaps with shadow rasterization
             {
+                
                 if (clouds_visible)
                 {
                     Pass_CloudShadow(cmd_list_compute);
@@ -511,6 +599,11 @@ namespace spartan
 
                 cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
                 cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
+                // Bind skinning output buffer (required by shader even if no skinned meshes, to avoid null descriptor)
+                if (RHI_Buffer* skinning_buf = GetBuffer(Renderer_Buffer::SkinningVerticesOut))
+                {
+                    cmd_list->SetBuffer(Renderer_BindingsUav::skinning_vertices_out, skinning_buf);
+                }
                 cmd_list->SetCullMode(RHI_CullMode::Back);
 
                 cmd_list->DrawIndexedIndirectCount(
@@ -640,6 +733,11 @@ namespace spartan
 
                 cmd_list->SetBufferIndex(GeometryBuffer::GetIndexBuffer());
                 cmd_list->SetBuffer(Renderer_BindingsUav::indirect_draw_data_out, GetBuffer(Renderer_Buffer::IndirectDrawDataOut));
+                // Bind skinning output buffer (required by shader even if no skinned meshes, to avoid null descriptor)
+                if (RHI_Buffer* skinning_buf = GetBuffer(Renderer_Buffer::SkinningVerticesOut))
+                {
+                    cmd_list->SetBuffer(Renderer_BindingsUav::skinning_vertices_out, skinning_buf);
+                }
                 cmd_list->SetCullMode(RHI_CullMode::Back);
 
                 cmd_list->DrawIndexedIndirectCount(
@@ -716,6 +814,8 @@ namespace spartan
                             pso.shaders[RHI_Shader_Type::Hull]   = hull;
                             pso.shaders[RHI_Shader_Type::Domain] = domain;
                             cmd_list->SetPipelineState(pso);
+                            // Bind skinning output buffer (required by shader even if no skinned meshes, to avoid null descriptor)
+                cmd_list->SetBuffer(Renderer_BindingsUav::skinning_vertices_out, GetBuffer(Renderer_Buffer::SkinningVerticesOut));
                             pipeline_set = true;
                         }
                     }

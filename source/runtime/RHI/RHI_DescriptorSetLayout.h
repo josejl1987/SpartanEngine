@@ -39,7 +39,7 @@ namespace spartan
 
         // binding api - O(1) slot lookup
         void SetConstantBuffer(uint32_t slot, RHI_Buffer* constant_buffer);
-        void SetBuffer(uint32_t slot, RHI_Buffer* buffer);
+        void SetBuffer(uint32_t slot, RHI_Buffer* buffer, bool is_uav = true);
         void SetTexture(uint32_t slot, RHI_Texture* texture, uint32_t mip_index, uint32_t mip_range);
         void SetAccelerationStructure(uint32_t slot, RHI_AccelerationStructure* tlas);
 

@@ -200,6 +200,7 @@ namespace spartan
         static void Pass_ShadowMaps(RHI_CommandList* cmd_list);
         static void Pass_HiZ(RHI_CommandList* cmd_list);
         static void Pass_IndirectCull(RHI_CommandList* cmd_list);
+        static void Pass_GpuSkinning(RHI_CommandList* cmd_list);
         static void Pass_Depth_Prepass(RHI_CommandList* cmd_list);
         static void Pass_GBuffer(RHI_CommandList* cmd_list, const bool is_transparent_pass);
         static void Pass_ScreenSpaceAmbientOcclusion(RHI_CommandList* cmd_list);
@@ -263,6 +264,11 @@ namespace spartan
         static void UpdateAccelerationStructures(RHI_CommandList* cmd_list);
         static void RotateFrameBuffers();
 
+        // bone palette management
+        static void ResetBonePaletteState();
+        static uint32_t AllocateBoneSlots(uint32_t count);
+        static void UploadBoneMatrices(RHI_CommandList* cmd_list, uint32_t offset, const std::vector<math::Matrix>& current, const std::vector<math::Matrix>& previous);
+
         // draw calls
         static std::array<Renderer_DrawCall, renderer_max_draw_calls> m_draw_calls;
         static uint32_t m_draw_call_count;
@@ -282,6 +288,9 @@ namespace spartan
             std::shared_ptr<RHI_Buffer> indirect_draw_args_out;
             std::shared_ptr<RHI_Buffer> indirect_draw_data_out;
             std::shared_ptr<RHI_Buffer> indirect_draw_count;
+            std::shared_ptr<RHI_Buffer> skinning_bones;
+            std::shared_ptr<RHI_Buffer> skinning_jobs;
+            std::shared_ptr<RHI_Buffer> skinning_dispatch_args;
         };
         static std::array<FrameResource, renderer_draw_data_buffer_count> m_frame_resources;
         static uint32_t m_frame_resource_index;
@@ -325,6 +334,33 @@ namespace spartan
             }
         };
         static PassState m_pass_state;
+
+        // skinning
+        static constexpr uint32_t skinning_max_bone_matrices = 2'097'152;
+        static constexpr uint32_t skinning_max_palettes      = 8192;
+        static constexpr uint32_t skinning_max_vertices      = 1024 * 1024; // 1M skinned vertices per frame
+        static constexpr uint32_t skinning_thread_group_size = 64;
+        static constexpr uint32_t skinning_shared_cache_size = 64;
+        static constexpr float    skinning_warn_threshold    = 0.8f;
+
+
+        struct SkinningState
+        {
+            uint32_t bone_offset             = 0;  // offset into skinning_bones buffer
+            uint32_t vertex_output_offset    = 0;  // offset into skinning_vertices_out buffer
+            uint32_t bones_used              = 0;
+            uint32_t vertices_used           = 0;
+
+            void reset() { bone_offset = vertex_output_offset = bones_used = vertices_used = 0; }
+        };
+        static SkinningState m_skinning_state;
+
+        // skinning buffers (static since skinning state is static)
+        static std::unique_ptr<RHI_Buffer> m_sb_bone_matrices;
+        static std::unique_ptr<RHI_Buffer> m_sb_bone_palettes;
+        static std::unique_ptr<RHI_Buffer> m_sb_skinned_vertices;
+        static void* m_bone_matrix_mapped;
+
 
         // misc
         static Cb_Frame m_cb_frame_cpu;

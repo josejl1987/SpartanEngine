@@ -43,6 +43,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "World/Components/Script.h"
 #include "World/Components/ParticleSystem.h"
 #include "World/Prefab.h"
+#include "World/Components/Animator.h"
 //=======================================
 
 //= NAMESPACES =========
@@ -107,6 +108,7 @@ namespace
         inline ImVec4 accent_spline_follower() { return ImVec4(0.35f, 0.80f, 0.65f, 1.0f); }
         inline ImVec4 accent_script()          { return ImVec4(0.60f, 0.70f, 0.50f, 1.0f); }
         inline ImVec4 accent_particles() { return ImVec4(0.90f, 0.55f, 0.30f, 1.0f); }
+        inline ImVec4 accent_animator()  { return ImVec4(0.65f, 0.55f, 0.75f, 1.0f); }
 
         // helper to get dimmed version for backgrounds
         inline ImVec4 dimmed(const ImVec4& color, float factor = 0.15f)
@@ -650,6 +652,7 @@ void Properties::OnTickVisible()
             ShowPhysics(entity->GetComponent<Physics>());
             ShowVolume(entity->GetComponent<Volume>());
             ShowParticleSystem(entity->GetComponent<ParticleSystem>());
+            ShowAnimator(entity->GetComponent<Animator>());
 
             ShowAddComponentButton();
 
@@ -2176,6 +2179,64 @@ void Properties::ShowAudioSource(spartan::AudioSource* audio_source) const
     component_end();
 }
 
+void Properties::ShowAnimator(spartan::Animator* animator) const
+{
+    if (!animator)
+        return;
+
+    if (component_begin("Animator", design::accent_animator(), animator))
+    {
+        //= REFLECT ==============================================
+        string animation_path = animator->GetAnimationPath();
+        bool is_playing       = animator->IsPlaying();
+        bool loop             = animator->IsLooping();
+        float speed           = animator->GetSpeed();
+        float animation_time  = animator->GetAnimationTime();
+        //========================================================
+
+        // animation resource
+        property_resource("Animation", &animation_path, "animation file", [animator](const std::string& path) {
+            if (path.ends_with(".anim"))
+            {
+                animator->SetAnimationByPath(path);
+            }
+        });
+
+        layout::separator();
+        layout::section_header("Playback");
+
+        property_toggle("Is Playing", &is_playing, "animation is currently playing");
+        property_toggle("Loop", &loop, "repeat animation when finished");
+
+        layout::group_spacing();
+
+        // speed slider
+        {
+            layout::begin_property("Speed", "playback speed multiplier");
+            ImGui::DragFloat("##speed", &speed, 0.1f, 0.0f, 10.0f, "%.2fx");
+        }
+
+        layout::separator();
+        layout::section_header("Info");
+
+        // animation time (read-only)
+        {
+            layout::begin_property("Time", "current animation time in seconds");
+            ImGui::Text("%.3f sec", animation_time);
+        }
+
+        //= MAP ================================================================================
+        if (is_playing != animator->IsPlaying())
+        {
+            if (is_playing) animator->Play(); else animator->Pause();
+        }
+        if (loop != animator->IsLooping())       animator->SetLooping(loop);
+        if (speed != animator->GetSpeed())       animator->SetSpeed(speed);
+        //========================================================================================
+    }
+    component_end();
+}
+
 void Properties::ShowVolume(spartan::Volume* volume) const
 {
     if (!volume)
@@ -2566,6 +2627,11 @@ void Properties::ComponentContextMenu_Add() const
             if (ImGui::MenuItem("Renderable"))
             {
                 entity->AddComponent<Renderable>();
+            }
+
+            if (ImGui::MenuItem("Animator"))
+            {
+                entity->AddComponent<Animator>();
             }
 
             if (ImGui::MenuItem("Terrain"))

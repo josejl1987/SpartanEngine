@@ -30,11 +30,13 @@ using namespace std;
 
 namespace spartan
 {
-    // api specific
+// api specific
 #if defined(API_GRAPHICS_D3D12)
     RHI_Api_Type  RHI_Context::api_type     = RHI_Api_Type::D3d12;
     const char*   RHI_Context::api_type_str = "D3D12";
     ID3D12Device* RHI_Context::device       = nullptr;
+    ID3D12CommandSignature* RHI_Context::command_signature_dispatch_indirect       = nullptr;
+    ID3D12CommandSignature* RHI_Context::command_signature_draw_indexed_indirect     = nullptr;
 #elif defined(API_GRAPHICS_VULKAN)
     RHI_Api_Type     RHI_Context::api_type        = RHI_Api_Type::Vulkan;
     const char*      RHI_Context::api_type_str    = "Vulkan";

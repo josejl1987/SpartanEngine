@@ -106,13 +106,20 @@ function solution_configuration()
     solution(SOLUTION_NAME)
         location ".."
         language "C++"
-        configurations { "debug", "release" }
+        configurations { "debug", "dev", "release" }
         filter { "configurations:debug" }
             defines { "DEBUG" }
             flags { "MultiProcessorCompile" }
             optimize "Off"
             symbols "On"
             debugformat "c7"
+
+        -- Fast debug: optimized runtime with debug symbols
+        filter { "configurations:dev" }
+            defines { "DEBUG" }
+            flags { "MultiProcessorCompile" }
+            optimize "Speed"
+            symbols "On"
 
         filter { "configurations:release" }
             flags { "MultiProcessorCompile" }
@@ -134,7 +141,7 @@ function solution_configuration()
             architecture "x86_64"
             buildoptions { "-mavx2", "-mfma" }
             linkoptions {
-                "-Wl,--enable-new-dtags",
+                [[-Wl,-rpath,'$$ORIGIN/../third_party/install/lib']],
                 "-Wl,-rpath,/usr/local/lib",
                 "-Wl,-rpath,/usr/lib64",
                 "-Wl,-rpath,/usr/lib/x86_64-linux-gnu",
@@ -260,7 +267,28 @@ function spartan_project_configuration()
             debugdir(TARGET_DIR)
             links { "dxcompiler" }
 
+        -- Fast debug configuration (optimized + symbols)
+        filter { "configurations:dev" }
+            targetname(EXECUTABLE_NAME .. "_dev")
+            targetdir(TARGET_DIR)
+            debugdir(TARGET_DIR)
+            links { "dxcompiler" }
+
         filter { "configurations:debug", "system:windows" }
+            links { "assimp_debug", "FreeImageLib_debug", "freetype_debug", "SDL3_debug", "Compressonator_MT_debug", "meshoptimizer_debug", "NRD_debug", "ShaderMakeBlob_debug", "openxr_loader_debug", "lua_debug" }
+            links {
+                "PhysX_static_64_debug", "PhysXCommon_static_64_debug", "PhysXFoundation_static_64_debug", "PhysXExtensions_static_64_debug",
+                "PhysXPvdSDK_static_64_debug", "PhysXCooking_static_64_debug", "PhysXVehicle2_static_64_debug", "PhysXCharacterKinematic_static_64_debug"
+            }
+            if ARG_API_GRAPHICS == "vulkan" then
+                links {
+                    "spirv-cross-c_debug", "spirv-cross-core_debug", "spirv-cross-cpp_debug", "spirv-cross-glsl_debug", "spirv-cross-hlsl_debug",
+                    "ffx_backend_vk_x64d", "ffx_frameinterpolation_x64d", "ffx_fsr3_x64d", "ffx_fsr3upscaler_x64d",
+                    "ffx_opticalflow_x64d", "ffx_denoiser_x64d", "libxess"
+                }
+            end
+
+        filter { "configurations:dev", "system:windows" }
             links { "assimp_debug", "FreeImageLib_debug", "freetype_debug", "SDL3_debug", "Compressonator_MT_debug", "meshoptimizer_debug", "NRD_debug", "ShaderMakeBlob_debug", "openxr_loader_debug", "lua_debug" }
             links {
                 "PhysX_static_64_debug", "PhysXCommon_static_64_debug", "PhysXFoundation_static_64_debug", "PhysXExtensions_static_64_debug",
@@ -277,7 +305,16 @@ function spartan_project_configuration()
         filter { "configurations:debug", "system:linux" }
             libdirs { "../third_party/install/lib" }
             links {
-                "lua", "assimp", "freeimage", "freetype", "SDL3", "CMP_Compressonator", "CMP_Framework", "z", "pugixml", "dxcompiler", "NRD", "ShaderMakeBlob", "dl", "openxr_loader",
+                "lua", "assimp", "freeimage", "freetype", "SDL3", "CMP_Compressonator", "CMP_Core_SSE", "CMP_Core_AVX", "CMP_Core_AVX512", "CMP_Framework", "z", "pugixml", "dxcompiler", "NRD", "ShaderMakeBlob", "dl", "openxr_loader",
+                "spirv-cross-core", "spirv-cross-c", "spirv-cross-glsl", "spirv-cross-cpp", "spirv-cross-hlsl", "spirv-cross-reflect", "meshoptimizer", "vulkan",
+                "PhysX_static_64", "PhysXCommon_static_64", "PhysXFoundation_static_64", "PhysXExtensions_static_64",
+                "PhysXPvdSDK_static_64", "PhysXCooking_static_64", "PhysXVehicle2_static_64", "PhysXCharacterKinematic_static_64"
+            }
+
+        filter { "configurations:dev", "system:linux" }
+            libdirs { "../third_party/install/lib" }
+            links {
+                "lua", "assimp", "freeimage", "freetype", "SDL3", "CMP_Compressonator", "CMP_Core_SSE", "CMP_Core_AVX", "CMP_Core_AVX512", "CMP_Framework", "z", "pugixml", "dxcompiler", "NRD", "ShaderMakeBlob", "dl", "openxr_loader",
                 "spirv-cross-core", "spirv-cross-c", "spirv-cross-glsl", "spirv-cross-cpp", "spirv-cross-hlsl", "spirv-cross-reflect", "meshoptimizer", "vulkan",
                 "PhysX_static_64", "PhysXCommon_static_64", "PhysXFoundation_static_64", "PhysXExtensions_static_64",
                 "PhysXPvdSDK_static_64", "PhysXCooking_static_64", "PhysXVehicle2_static_64", "PhysXCharacterKinematic_static_64"
@@ -286,7 +323,7 @@ function spartan_project_configuration()
         filter { "configurations:release", "system:linux" }
             libdirs { "../third_party/install/lib" }
             links {
-                "lua", "assimp", "freeimage", "freetype", "SDL3", "CMP_Compressonator", "CMP_Framework", "z", "pugixml", "dxcompiler", "NRD", "ShaderMakeBlob", "dl", "openxr_loader",
+                "lua", "assimp", "freeimage", "freetype", "SDL3", "CMP_Compressonator", "CMP_Core_SSE", "CMP_Core_AVX", "CMP_Core_AVX512", "CMP_Framework", "z", "pugixml", "dxcompiler", "NRD", "ShaderMakeBlob", "dl", "openxr_loader",
                 "spirv-cross-core", "spirv-cross-c", "spirv-cross-glsl", "spirv-cross-cpp", "spirv-cross-hlsl", "spirv-cross-reflect", "meshoptimizer", "vulkan",
                 "PhysX_static_64", "PhysXCommon_static_64", "PhysXFoundation_static_64", "PhysXExtensions_static_64",
                 "PhysXPvdSDK_static_64", "PhysXCooking_static_64", "PhysXVehicle2_static_64", "PhysXCharacterKinematic_static_64"

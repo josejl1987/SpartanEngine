@@ -25,6 +25,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <string>
 #include <variant>
 #include <unordered_map>
+#include <memory>
 #include "Definitions.h"
 #include "Logging/Log.h"
 #include "Window.h"
@@ -140,6 +141,11 @@ namespace ImGuiSp
         return result;
     }
 
+    static bool image_button(std::shared_ptr<spartan::RHI_Texture> texture, const spartan::math::Vector2& size, bool border, ImVec4 tint = {1,1,1,1})
+    {
+        return image_button(texture.get(), size, border, tint);
+    }
+
     static void image(spartan::RHI_Texture* texture, const spartan::math::Vector2& size, bool border = false)
     {
         if (!border)
@@ -162,6 +168,11 @@ namespace ImGuiSp
         }
     }
 
+    static void image(std::shared_ptr<spartan::RHI_Texture> texture, const spartan::math::Vector2& size, bool border = false)
+    {
+        image(texture.get(), size, border);
+    }
+
     static void image(spartan::RHI_Texture* texture, const ImVec2& size, const ImVec4& tint = default_tint, const ImColor& border = ImColor(0, 0, 0, 0))
     {
         ImGui::Image(
@@ -174,10 +185,15 @@ namespace ImGuiSp
         );
     }
 
+    static void image(std::shared_ptr<spartan::RHI_Texture> texture, const ImVec2& size, const ImVec4& tint = default_tint, const ImColor& border = ImColor(0, 0, 0, 0))
+    {
+        image(texture.get(), size, tint, border);
+    }
+
     static void image(const spartan::IconType icon, const float size)
     {
         ImGui::Image(
-            reinterpret_cast<ImTextureID>(spartan::ResourceCache::GetIcon(icon)),
+            reinterpret_cast<ImTextureID>(spartan::ResourceCache::GetIcon(icon).get()),
             ImVec2(size, size),
             ImVec2(0, 0),
             ImVec2(1, 1),
@@ -189,7 +205,7 @@ namespace ImGuiSp
     static void image(const spartan::IconType icon, const float size,const ImVec4 tint)
     {
         ImGui::Image(
-            reinterpret_cast<ImTextureID>(spartan::ResourceCache::GetIcon(icon)),
+            reinterpret_cast<ImTextureID>(spartan::ResourceCache::GetIcon(icon).get()),
             ImVec2(size, size),
             ImVec2(0, 0),
             ImVec2(1, 1),

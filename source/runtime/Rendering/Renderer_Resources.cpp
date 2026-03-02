@@ -24,6 +24,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "Window.h"
 #include "Renderer.h"
 #include "Material.h"
+#include "SkinningGeometryBuffer.h"
 #include "../Geometry/GeometryGeneration.h"
 #include "../World/Components/Light.h"
 #include "../Resource/ResourceCache.h"
@@ -151,6 +152,57 @@ namespace spartan
         buffer(Renderer_Buffer::ParticleBufferA) = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_Particle)),       particle_max, nullptr,                true, "particle_buffer_a");
         buffer(Renderer_Buffer::ParticleCounter) = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(uint32_t)),          2,            particle_counter_init,  true, "particle_counter");
         buffer(Renderer_Buffer::ParticleEmitter) = make_shared<RHI_Buffer>(RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_EmitterParams)),  1,            nullptr,                true, "particle_emitter");
+
+        // gpu skinning buffers
+        // Static input buffers (managed by SkinningGeometryBuffer, created on first skinned mesh load)
+        buffer(Renderer_Buffer::SkinningVerticesIn) = nullptr; // Retrieved from SkinningGeometryBuffer::GetVerticesBuffer()
+        buffer(Renderer_Buffer::SkinningIndices)     = nullptr; // Retrieved from SkinningGeometryBuffer::GetIndicesBuffer()
+        buffer(Renderer_Buffer::SkinningWeights)     = nullptr; // Retrieved from SkinningGeometryBuffer::GetWeightsBuffer()
+
+        // Per-frame buffers (created in frame resources)
+        static constexpr uint32_t skinning_max_vertices = 1024 * 1024; // 1M vertices
+        static constexpr uint32_t skinning_max_bones    = 1024 * 8;    // 8K bones per frame
+        static constexpr uint32_t skinning_max_jobs   = 1024;
+
+        for (uint32_t i = 0; i < renderer_draw_data_buffer_count; i++)
+        {
+            FrameResource& fr = m_frame_resources[i];
+
+            // Skinning bones - per-frame bone matrix buffer (mappable for CPU upload)
+            fr.skinning_bones = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_SkinningBone)),
+                skinning_max_bones, nullptr, true,
+                (string("skinning_bones_") + to_string(i)).c_str()
+            );
+
+            // Skinning jobs - per-frame job list (mappable for CPU upload)
+            fr.skinning_jobs = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_SkinningJob)),
+                skinning_max_jobs + 1, nullptr, true, // +1 for header at index 0
+                (string("skinning_jobs_") + to_string(i)).c_str()
+            );
+
+            // Skinning dispatch args - per-frame indirect dispatch (mappable for CPU upload)
+            uint32_t dispatch_init[3] = { 0, 1, 1 };
+            fr.skinning_dispatch_args = make_shared<RHI_Buffer>(
+                RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_SkinningDispatchArgs)),
+                1, dispatch_init, true,
+                (string("skinning_dispatch_args_") + to_string(i)).c_str()
+            );
+        }
+
+        // Point active buffers at frame 0
+        buffer(Renderer_Buffer::SkinningBones)       = m_frame_resources[0].skinning_bones;
+        buffer(Renderer_Buffer::SkinningJobs)        = m_frame_resources[0].skinning_jobs;
+        buffer(Renderer_Buffer::SkinningDispatchArgs)= m_frame_resources[0].skinning_dispatch_args;
+
+        // Skinning output - device-local UAV buffer for compute shader output
+        // Single buffer reused each frame (barriers ensure proper GPU-side ordering)
+        buffer(Renderer_Buffer::SkinningVerticesOut) = make_shared<RHI_Buffer>(
+            RHI_Buffer_Type::Storage, static_cast<uint32_t>(sizeof(Sb_SkinnedVertex)),
+            skinning_max_vertices, nullptr, false, // device-local, not mappable
+            "skinning_vertices_out"
+        );
     }
 
     void Renderer::CreateDepthStencilStates()
@@ -777,6 +829,12 @@ namespace spartan
             shader(Renderer_Shader::particle_render_c)->Compile(RHI_Shader_Type::Compute, shader_dir + "particles.hlsl", async);
         }
 
+        // gpu skinning
+        {
+            shader(Renderer_Shader::skinning_c) = make_shared<RHI_Shader>();
+            shader(Renderer_Shader::skinning_c)->Compile(RHI_Shader_Type::Compute, shader_dir + "gpu_skinning.hlsl", async);
+        }
+
         // gpu texture compression - compiled synchronously since it's needed during texture loading
         shader(Renderer_Shader::texture_compress_bc1_c) = make_shared<RHI_Shader>();
         shader(Renderer_Shader::texture_compress_bc1_c)->Compile(RHI_Shader_Type::Compute, shader_dir + "texture_compress_bc1.hlsl", false);
@@ -960,6 +1018,14 @@ namespace spartan
 
     RHI_Buffer* Renderer::GetBuffer(const Renderer_Buffer type)
     {
+        // Static skinning buffers are managed by SkinningGeometryBuffer
+        switch (type)
+        {
+            case Renderer_Buffer::SkinningVerticesIn:  return SkinningGeometryBuffer::GetVerticesBuffer();
+            case Renderer_Buffer::SkinningIndices:     return SkinningGeometryBuffer::GetIndicesBuffer();
+            case Renderer_Buffer::SkinningWeights:     return SkinningGeometryBuffer::GetWeightsBuffer();
+            default: break;
+        }
         return buffers[static_cast<uint8_t>(type)].get();
     }
 
@@ -973,6 +1039,9 @@ namespace spartan
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawArgsOut)] = fr.indirect_draw_args_out;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawDataOut)] = fr.indirect_draw_data_out;
         buffers[static_cast<uint8_t>(Renderer_Buffer::IndirectDrawCount)]   = fr.indirect_draw_count;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::SkinningBones)]       = fr.skinning_bones;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::SkinningJobs)]        = fr.skinning_jobs;
+        buffers[static_cast<uint8_t>(Renderer_Buffer::SkinningDispatchArgs)] = fr.skinning_dispatch_args;
     }
 
     RHI_Texture* Renderer::GetStandardTexture(const Renderer_StandardTexture type)

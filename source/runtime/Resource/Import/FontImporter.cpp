@@ -60,7 +60,7 @@ namespace spartan
             {
                 if (buffer)
                 {
-                    delete buffer;
+                    delete[] buffer;
                     buffer = nullptr;
                 }
             }

@@ -31,6 +31,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../../World/World.h"
 #include "../../World/Entity.h"
 #include "../../World/Components/Light.h"
+#include "../../World/Components/Animator.h"
+#include "../../Rendering/SkinningGeometryBuffer.h"
 #include "../../Resource/ResourceCache.h"
 SP_WARNINGS_OFF
 #include "assimp/scene.h"
@@ -56,6 +58,7 @@ namespace spartan
         string model_directory;
         Mesh* mesh           = nullptr;
         const aiScene* scene = nullptr;
+        vector<string> animation_paths; // Store animation paths for auto-setup
     };
 
     namespace
@@ -596,8 +599,97 @@ namespace spartan
                 ctx.mesh->CreateGpuBuffers();
             }
 
+            // Flush skinning geometry data to GPU after all meshes are processed
+            SkinningGeometryBuffer::Flush();
+
             // make the root entity active since it's now thread-safe
             ctx.mesh->GetRootEntity()->SetActive(true);
+
+            // Load animations from the scene
+            SP_LOG_INFO("Scene has %u animations", ctx.scene->mNumAnimations);
+            if (ctx.scene->mNumAnimations > 0)
+            {
+                for (uint32_t anim_idx = 0; anim_idx < ctx.scene->mNumAnimations; anim_idx++)
+                {
+                    const aiAnimation* ai_anim = ctx.scene->mAnimations[anim_idx];
+                    auto animation = make_shared<Animation>();
+
+                    // Set animation properties
+                    animation->SetObjectName(string(ai_anim->mName.C_Str()) + ".anim");
+                    animation->SetDurationInSeconds(ai_anim->mDuration / ai_anim->mTicksPerSecond);
+                    animation->SetTicksPerSecond(ai_anim->mTicksPerSecond);
+
+                    // Process each animation channel (bone track)
+                    for (uint32_t channel_idx = 0; channel_idx < ai_anim->mNumChannels; channel_idx++)
+                    {
+                        const aiNodeAnim* ai_channel = ai_anim->mChannels[channel_idx];
+                        string bone_name = ai_channel->mNodeName.C_Str();
+
+                        // Extract position keys
+                        vector<AnimationKey<Vector3>> position_keys;
+                        for (uint32_t key_idx = 0; key_idx < ai_channel->mNumPositionKeys; key_idx++)
+                        {
+                            const aiVectorKey& ai_key = ai_channel->mPositionKeys[key_idx];
+                            position_keys.push_back({ static_cast<float>(ai_key.mTime), to_vector3(ai_key.mValue) });
+                        }
+
+                        // Extract rotation keys
+                        vector<AnimationKey<Quaternion>> rotation_keys;
+                        for (uint32_t key_idx = 0; key_idx < ai_channel->mNumRotationKeys; key_idx++)
+                        {
+                            const aiQuatKey& ai_key = ai_channel->mRotationKeys[key_idx];
+                            rotation_keys.push_back({ static_cast<float>(ai_key.mTime), to_quaternion(ai_key.mValue) });
+                        }
+
+                        // Extract scale keys
+                        vector<AnimationKey<Vector3>> scale_keys;
+                        for (uint32_t key_idx = 0; key_idx < ai_channel->mNumScalingKeys; key_idx++)
+                        {
+                            const aiVectorKey& ai_key = ai_channel->mScalingKeys[key_idx];
+                            scale_keys.push_back({ static_cast<float>(ai_key.mTime), to_vector3(ai_key.mValue) });
+                        }
+
+                        // Add channel to animation
+                        animation->AddChannel(bone_name, position_keys, rotation_keys, scale_keys);
+                    }
+
+                    // Save animation resource to file
+                    string anim_path = ctx.model_directory + animation->GetObjectName();
+                    animation->SetResourceFilePath(anim_path);
+                    animation->SaveToFile(anim_path);
+                    SP_LOG_INFO("Saved animation to: %s", anim_path.c_str());
+
+                    ResourceCache::Cache(animation);
+
+                    // Store animation path for auto-setup
+                    ctx.animation_paths.push_back(anim_path);
+
+                    SP_LOG_INFO("Loaded animation: %s", animation->GetObjectName().c_str());
+                }
+                
+                // Auto-add Animator component after all animations are loaded
+                SP_LOG_INFO("Animation paths count after loading: %zu", ctx.animation_paths.size());
+                if (!ctx.animation_paths.empty())
+                {
+                    Entity* root_entity = ctx.mesh->GetRootEntity();
+                    if (root_entity)
+                    {
+                        SP_LOG_INFO("Adding Animator component to root entity '%s'", root_entity->GetObjectName().c_str());
+                        Animator* animator = root_entity->AddComponent<Animator>();
+                        if (animator)
+                        {
+                            SP_LOG_INFO("Animator component added, setting animation: %s", ctx.animation_paths[0].c_str());
+                            animator->SetAnimationByPath(ctx.animation_paths[0]);
+                            animator->Play();
+                            SP_LOG_INFO("Auto-configured Animator with animation: %s", ctx.animation_paths[0].c_str());
+                        }
+                        else
+                        {
+                            SP_LOG_ERROR("Failed to add Animator component");
+                        }
+                    }
+                }
+            }
         }
         else
         {
@@ -732,12 +824,99 @@ namespace spartan
         process_vertices_parallel(assimp_mesh, vertices);
         process_indices_parallel(assimp_mesh, indices);
 
+        // process bone data if present
+        BoneData mesh_bone_data;
+        if (assimp_mesh->HasBones() && assimp_mesh->mNumBones > 0)
+        {
+            mesh_bone_data.bone_count = assimp_mesh->mNumBones;
+            mesh_bone_data.bone_names.resize(assimp_mesh->mNumBones);
+            mesh_bone_data.bone_offsets.resize(assimp_mesh->mNumBones);
+
+            // Initialize bone indices/weights arrays
+            mesh_bone_data.bone_indices.resize(vertices.size() * 4, 0);
+            mesh_bone_data.bone_weights.resize(vertices.size() * 4, 0.0f);
+
+            vector<uint8_t> weight_counts(vertices.size(), 0);
+
+            // Process each bone
+            for (uint32_t bone_idx = 0; bone_idx < assimp_mesh->mNumBones; bone_idx++)
+            {
+                aiBone* bone = assimp_mesh->mBones[bone_idx];
+
+                // Store bone name and offset matrix
+                mesh_bone_data.bone_names[bone_idx] = bone->mName.C_Str();
+                mesh_bone_data.bone_offsets[bone_idx] = to_matrix(bone->mOffsetMatrix);
+
+                // Process bone weights
+                for (uint32_t weight_idx = 0; weight_idx < bone->mNumWeights; weight_idx++)
+                {
+                    aiVertexWeight& weight = bone->mWeights[weight_idx];
+                    uint32_t vertex_id = weight.mVertexId;
+
+                    if (vertex_id >= vertices.size())
+                        continue;
+
+                    uint8_t& count = weight_counts[vertex_id];
+                    if (count < 4)
+                    {
+                        uint32_t idx = vertex_id * 4 + count;
+                        mesh_bone_data.bone_indices[idx] = static_cast<uint8_t>(bone_idx);
+                        mesh_bone_data.bone_weights[idx] = weight.mWeight;
+                        count++;
+                    }
+                }
+            }
+
+            // Normalize weights (ensure they sum to 1.0)
+            for (size_t i = 0; i < vertices.size(); i++)
+            {
+                float sum = 0.0f;
+                for (uint32_t j = 0; j < 4; j++)
+                {
+                    sum += mesh_bone_data.bone_weights[i * 4 + j];
+                }
+                if (sum > 0.0001f)
+                {
+                    for (uint32_t j = 0; j < 4; j++)
+                    {
+                        mesh_bone_data.bone_weights[i * 4 + j] /= sum;
+                    }
+                }
+            }
+        }
+
         // add vertex and index data to the mesh
         uint32_t sub_mesh_index = 0;
         ctx.mesh->AddGeometry(vertices, indices, true, &sub_mesh_index);
 
+        // store bone data if present
+        uint32_t bone_count = mesh_bone_data.bone_count;
+
         // set the geometry
-        entity_parent->AddComponent<Renderable>()->SetMesh(ctx.mesh, sub_mesh_index);
+        Renderable* renderable = entity_parent->AddComponent<Renderable>();
+        renderable->SetMesh(ctx.mesh, sub_mesh_index);
+        
+        // enable skinning if mesh has bone data
+        if (bone_count > 0)
+        {
+            renderable->SetSkinned(true);
+            renderable->SetBoneCount(bone_count);
+            
+            // Upload skinning data to GPU buffers
+            const uint32_t vert_offset   = SkinningGeometryBuffer::AppendVertices(vertices);
+            const uint32_t index_offset  = SkinningGeometryBuffer::AppendBoneIndices(mesh_bone_data.bone_indices);
+            const uint32_t weight_offset = SkinningGeometryBuffer::AppendBoneWeights(mesh_bone_data.bone_weights);
+            
+            // All three offsets should be the same vertex index
+            SP_ASSERT(vert_offset == index_offset && index_offset == weight_offset);
+            
+            // Store on the renderable for use in Pass_GpuSkinning job building
+            renderable->SetSkinningVertexInputOffset(vert_offset);
+            renderable->SetSkinningVertexCount(static_cast<uint32_t>(vertices.size()));
+
+            // Move bone data to mesh after we've uploaded skinning inputs
+            ctx.mesh->SetBoneData(std::move(mesh_bone_data));
+        }
 
         // material
         if (ctx.scene->HasMaterials())

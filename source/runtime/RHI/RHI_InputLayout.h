@@ -118,6 +118,20 @@ namespace spartan
 
                 m_vertex_size = sizeof(RHI_Vertex_PosTexNorTan);
             }
+            else if (vertex_type == RHI_Vertex_Type::PosUvNorTanSkinned)
+            {
+                m_vertex_attributes =
+                {
+                    { "POSITION",     0, binding, RHI_Format::R32G32B32_Float,       offsetof(RHI_Vertex_PosTexNorTanSkinned, pos) },
+                    { "TEXCOORD",     1, binding, RHI_Format::R32G32_Float,          offsetof(RHI_Vertex_PosTexNorTanSkinned, tex) },
+                    { "NORMAL",       2, binding, RHI_Format::R32G32B32_Float,       offsetof(RHI_Vertex_PosTexNorTanSkinned, nor) },
+                    { "TANGENT",      3, binding, RHI_Format::R32G32B32_Float,       offsetof(RHI_Vertex_PosTexNorTanSkinned, tan) },
+                    { "BLENDINDICES", 4, binding, RHI_Format::R32G32B32A32_Float,   offsetof(RHI_Vertex_PosTexNorTanSkinned, bone_indices) },
+                    { "BLENDWEIGHT",  5, binding, RHI_Format::R32G32B32A32_Float,   offsetof(RHI_Vertex_PosTexNorTanSkinned, bone_weights) }
+                };
+
+                m_vertex_size = sizeof(RHI_Vertex_PosTexNorTanSkinned);
+            }
         }
 
         RHI_Vertex_Type GetVertexType()                                const { return m_vertex_type; }

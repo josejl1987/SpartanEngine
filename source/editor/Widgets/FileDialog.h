@@ -28,6 +28,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include <string>
 #include <functional>
 #include <mutex>
+#include <memory>
 //===================================
 
 enum FileDialog_Type
@@ -66,7 +67,7 @@ enum FileDialog_ViewMode
 class FileDialogItem
 {
 public:
-    FileDialogItem(const std::string& path, spartan::RHI_Texture* icon)
+    FileDialogItem(const std::string& path, std::shared_ptr<spartan::RHI_Texture> icon)
     {
         m_path          = path;
         m_path_relative = spartan::FileSystem::GetRelativePath(path);
@@ -80,7 +81,7 @@ public:
     const auto& GetPathRelative() const { return m_path_relative; }
     const auto& GetLabel() const { return m_label; }
     uint32_t GetId() const { return m_id; }
-    spartan::RHI_Texture* GetIcon() const { return m_icon; }
+    spartan::RHI_Texture* GetIcon() const { return m_icon.get(); }
     auto IsDirectory() const { return m_isDirectory; }
     auto GetTimeSinceLastClickMs() const { return static_cast<float>(m_time_since_last_click.count()); }
     void Clicked()
@@ -91,7 +92,7 @@ public:
     }
 
 private:
-    spartan::RHI_Texture* m_icon;
+    std::shared_ptr<spartan::RHI_Texture> m_icon;
     uint32_t m_id;
     std::string m_path;
     std::string m_path_relative;

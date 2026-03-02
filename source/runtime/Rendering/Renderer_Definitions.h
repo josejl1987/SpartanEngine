@@ -140,6 +140,12 @@ namespace spartan
         reservoir_prev2    = 24,
         reservoir_prev3    = 25,
         reservoir_prev4    = 26,
+        // skinning (t-registers, will be shifted +300 by SetBuffer)
+        skinning_jobs        = 27,
+        skinning_bones       = 28,
+        skinning_vertices_in = 29,
+        skinning_indices     = 30,
+        skinning_weights     = 31,
     };
 
     enum class Renderer_BindingsUav
@@ -181,6 +187,8 @@ namespace spartan
         compress_input         = 40,
         compress_output        = 41,
         compress_output_bc1    = 42,
+        // skinning (u-registers, will be shifted +100 by SetBuffer)
+        skinning_vertices_out = 43,
     };
 
     enum class Renderer_Shader : uint8_t
@@ -269,6 +277,8 @@ namespace spartan
         texture_compress_bc1_c,
         texture_compress_bc3_c,
         texture_compress_bc5_c,
+        // skinning
+        skinning_c,
         max
     };
     
@@ -379,6 +389,14 @@ namespace spartan
         ParticleBufferB,
         ParticleCounter,
         ParticleEmitter,
+        // gpu skinning
+        SkinningBones,             // Sb_BoneMatrix array (per-frame)
+        SkinningJobs,              // Sb_SkinningJob array (per-frame)
+        SkinningVerticesIn,        // Sb_SkinningVertexIn array (persistent)
+        SkinningIndices,           // uint4 bone indices per vertex (persistent)
+        SkinningWeights,           // float4 bone weights per vertex (persistent)
+        SkinningVerticesOut,       // Sb_SkinnedVertex output (ring buffer)
+        SkinningDispatchArgs,      // Sb_SkinningDispatchArgs (indirect dispatch)
         Max
     };
 

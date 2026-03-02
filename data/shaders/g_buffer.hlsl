@@ -116,12 +116,31 @@ float3 compute_flower_color(float height_percent, uint instance_id)
 gbuffer_vertex main_vs(uint vertex_id : SV_VertexID, uint instance_id : SV_InstanceID, [[vk::builtin("DrawIndex")]] uint draw_id : DRAW_INDEX)
 {
     _draw = indirect_draw_data_out[draw_id];
-    Vertex_PosUvNorTan input = pull_vertex(vertex_id);
+
+    Vertex_PosUvNorTan input;
+    float3 position_prev_local;
+    bool is_skinned = fetch_vertex_indirect(vertex_id, _draw.skinned_vertex_offset, input, position_prev_local);
+
+    float3 position_world          = 0.0f;
+    float3 position_world_previous = 0.0f;
+    gbuffer_vertex vertex;
+
+    if (is_skinned)
+    {
+        vertex = transform_to_world_space_skinned(input, position_prev_local, instance_id, _draw.transform, position_world, position_world_previous);
+    }
+    else
+    {
+        vertex = transform_to_world_space(input, instance_id, _draw.transform, position_world, position_world_previous);
+    }
+
+    vertex.material_index = _draw.material_index;
+    return transform_to_clip_space(vertex, position_world, position_world_previous);
+}
 #else
 gbuffer_vertex main_vs(Vertex_PosUvNorTan input, uint instance_id : SV_InstanceID)
 {
     _draw = draw_data[buffer_pass.draw_index];
-#endif
 
     float3 position_world          = 0.0f;
     float3 position_world_previous = 0.0f;
@@ -129,6 +148,7 @@ gbuffer_vertex main_vs(Vertex_PosUvNorTan input, uint instance_id : SV_InstanceI
     vertex.material_index          = _draw.material_index;
     return transform_to_clip_space(vertex, position_world, position_world_previous);
 }
+#endif
 
 gbuffer main_ps(gbuffer_vertex vertex, bool is_front_face : SV_IsFrontFace)
 {
