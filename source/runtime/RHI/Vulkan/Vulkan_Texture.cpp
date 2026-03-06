@@ -436,5 +436,6 @@ namespace spartan
         RHI_CommandList::RemoveLayout(m_rhi_resource);
         RHI_Device::DeletionQueueAdd(RHI_Resource_Type::Image, m_rhi_resource);
         m_rhi_resource = nullptr;
+        m_resource_state = ResourceState::Max;
     }
 }

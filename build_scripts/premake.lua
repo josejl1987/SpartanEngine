@@ -58,6 +58,12 @@ function check_linux_dependencies()
         "libassimp.a",
         "libmeshoptimizer.a",
         "libCMP_Common.a",
+        "libCMP_Compressonator.a",
+        "libCMP_Core.a",
+        "libCMP_Core_SSE.a",
+        "libCMP_Core_AVX.a",
+        "libCMP_Core_AVX512.a",
+        "libCMP_Framework.a",
         "libNRD.a",
         "libdxcompiler.so"
     }
@@ -135,6 +141,8 @@ function solution_configuration()
             buildoptions { "-mavx2", "-mfma" }
             linkoptions {
                 "-Wl,--enable-new-dtags",
+                "-Wl,-rpath,'$$ORIGIN'",
+                "-Wl,-rpath,'$$ORIGIN/../third_party/install/lib'",
                 "-Wl,-rpath,/usr/local/lib",
                 "-Wl,-rpath,/usr/lib64",
                 "-Wl,-rpath,/usr/lib/x86_64-linux-gnu",
@@ -277,7 +285,7 @@ function spartan_project_configuration()
         filter { "configurations:debug", "system:linux" }
             libdirs { "../third_party/install/lib" }
             links {
-                "lua", "assimp", "freeimage", "freetype", "SDL3", "CMP_Compressonator", "CMP_Framework", "z", "pugixml", "dxcompiler", "NRD", "ShaderMakeBlob", "dl", "openxr_loader",
+                "lua", "assimp", "freeimage", "freetype", "SDL3", "CMP_Compressonator", "CMP_Core", "CMP_Core_SSE", "CMP_Core_AVX", "CMP_Core_AVX512", "CMP_Framework", "z", "pugixml", "dxcompiler", "NRD", "ShaderMakeBlob", "dl", "openxr_loader",
                 "spirv-cross-core", "spirv-cross-c", "spirv-cross-glsl", "spirv-cross-cpp", "spirv-cross-hlsl", "spirv-cross-reflect", "meshoptimizer", "vulkan",
                 "PhysX_static_64", "PhysXCommon_static_64", "PhysXFoundation_static_64", "PhysXExtensions_static_64",
                 "PhysXPvdSDK_static_64", "PhysXCooking_static_64", "PhysXVehicle2_static_64", "PhysXCharacterKinematic_static_64"
@@ -286,7 +294,7 @@ function spartan_project_configuration()
         filter { "configurations:release", "system:linux" }
             libdirs { "../third_party/install/lib" }
             links {
-                "lua", "assimp", "freeimage", "freetype", "SDL3", "CMP_Compressonator", "CMP_Framework", "z", "pugixml", "dxcompiler", "NRD", "ShaderMakeBlob", "dl", "openxr_loader",
+                "lua", "assimp", "freeimage", "freetype", "SDL3", "CMP_Compressonator", "CMP_Core", "CMP_Core_SSE", "CMP_Core_AVX", "CMP_Core_AVX512", "CMP_Framework", "z", "pugixml", "dxcompiler", "NRD", "ShaderMakeBlob", "dl", "openxr_loader",
                 "spirv-cross-core", "spirv-cross-c", "spirv-cross-glsl", "spirv-cross-cpp", "spirv-cross-hlsl", "spirv-cross-reflect", "meshoptimizer", "vulkan",
                 "PhysX_static_64", "PhysXCommon_static_64", "PhysXFoundation_static_64", "PhysXExtensions_static_64",
                 "PhysXPvdSDK_static_64", "PhysXCooking_static_64", "PhysXVehicle2_static_64", "PhysXCharacterKinematic_static_64"
