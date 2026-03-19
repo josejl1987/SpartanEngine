@@ -25,6 +25,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../../Math/Quaternion.h"
 #include <cstdint>
 #include <vector>
+#include <span>
 //===============================
 
 namespace spartan
@@ -73,6 +74,7 @@ namespace spartan
         float duration_seconds = 0.0f;
         float sample_rate      = 30.0f;
         uint32_t joint_count   = 0;
+        uint32_t sample_count  = 0;
 
         // Cooked base local pose (bind pose with constant channels already applied).
         std::vector<math::Vector3> base_local_positions;
@@ -86,5 +88,7 @@ namespace spartan
         PositionTrackStream position_stream;
         RotationTrackStream rotation_stream;
         ScaleTrackStream scale_stream;
+
+        void SampleToMatrices(const float time_seconds, std::span<math::Matrix> out) const;
     };
 }

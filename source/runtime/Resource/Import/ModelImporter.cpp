@@ -22,16 +22,18 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //= INCLUDES ============================
 #include "pch.h"
 #include "ModelImporter.h"
+#include "AnimationCooker.h"
 #include "../../Core/ProgressTracker.h"
 #include "../../Core/ThreadPool.h"
 #include "../../RHI/RHI_Texture.h"
-#include "../../Rendering/Animation.h"
+#include "../../Rendering/Animation/AnimationClip.h"
 #include "../../Geometry/Mesh.h"
 #include "../../Rendering/Material.h"
 #include "../../World/World.h"
 #include "../../World/Entity.h"
 #include "../../World/Components/Light.h"
 #include "../../Resource/ResourceCache.h"
+#include <algorithm>
 SP_WARNINGS_OFF
 #include "assimp/scene.h"
 #include "assimp/ProgressHandler.hpp"
@@ -56,6 +58,42 @@ namespace spartan
         string model_directory;
         Mesh* mesh           = nullptr;
         const aiScene* scene = nullptr;
+        Matrix source_to_engine = Matrix::Identity;
+        animation_cooker::SkeletonBuildResult skeleton_build;
+        std::vector<animation_cooker::CookedSkinnedSubMesh> cooked_skinned_submeshes;
+        bool has_skeleton_data = false;
+        bool has_animations    = false;
+        bool has_skinning      = false;
+        std::vector<Entity*> created_entities;
+    };
+
+    static bool mesh_has_skinning_weights(const aiMesh* mesh)
+    {
+        if (!mesh || mesh->mNumBones == 0)
+            return false;
+
+        for (uint32_t bone_index = 0; bone_index < mesh->mNumBones; bone_index++)
+        {
+            const aiBone* bone = mesh->mBones[bone_index];
+            if (bone && bone->mNumWeights > 0)
+                return true;
+        }
+
+        return false;
+    }
+
+    static bool scene_has_skinned_meshes(const aiScene* scene)
+    {
+        if (!scene)
+            return false;
+
+        for (uint32_t mesh_index = 0; mesh_index < scene->mNumMeshes; mesh_index++)
+        {
+            if (mesh_has_skinning_weights(scene->mMeshes[mesh_index]))
+                return true;
+        }
+
+        return false;
     };
 
     namespace
@@ -503,14 +541,14 @@ namespace spartan
     
     }
 
-    void ModelImporter::Load(Mesh* mesh_in, const string& file_path)
+    bool ModelImporter::Load(Mesh* mesh_in, const string& file_path)
     {
         SP_ASSERT_MSG(mesh_in != nullptr, "Invalid parameter");
 
         if (!FileSystem::IsFile(file_path))
         {
             SP_LOG_ERROR("Provided file path doesn't point to an existing file");
-            return;
+            return false;
         }
 
         lock_guard<mutex> guard(mutex_import);
@@ -574,16 +612,79 @@ namespace spartan
 
         ProgressTracker::GetProgress(ProgressType::ModelImporter).Start(1, "Loading model from drive...");
 
+        auto cleanup_on_failure = [&]()
+        {
+            for (Entity* entity : ctx.created_entities)
+            {
+                World::RemoveEntityImmediate(entity);
+            }
+            ctx.mesh->Clear();
+        };
+
         // read the 3d model file from drive
         ctx.scene = importer.ReadFile(file_path, import_flags);
         if (ctx.scene)
         {
+            const animation_cooker::SourceSkeletonGraph source_graph = animation_cooker::CollectSourceSkeletonGraph(ctx.scene);
+            ctx.has_skeleton_data = !source_graph.runtime_bone_names.empty();
+            ctx.has_animations    = ctx.scene->mNumAnimations > 0;
+            ctx.has_skinning      = scene_has_skinned_meshes(ctx.scene);
+
+            if (ctx.has_skeleton_data || ctx.has_animations || ctx.has_skinning)
+            {
+                ctx.source_to_engine = animation_cooker::ComputeSourceToEngineConversion(ctx.scene);
+                const std::vector<animation_cooker::SourceAnimationClip> source_clips = animation_cooker::CollectSourceAnimationClips(ctx.scene);
+
+                // Any skeletal asset class requires a valid cooked runtime skeleton.
+                ctx.skeleton_build = animation_cooker::BuildRuntimeSkeleton(
+                    ctx.scene,
+                    source_graph,
+                    ctx.source_to_engine,
+                    ctx.model_name,
+                    ctx.model_directory
+                );
+
+                if (!ctx.skeleton_build.skeleton)
+                {
+                    SP_LOG_ERROR("ModelImporter: skeletal asset '%s' failed runtime skeleton cook", ctx.model_name.c_str());
+                    cleanup_on_failure();
+                    return false;
+                }
+
+                ctx.mesh->SetSkeleton(ctx.skeleton_build.skeleton);
+
+                for (const animation_cooker::SourceAnimationClip& source_clip : source_clips)
+                {
+                    if (!animation_cooker::CookRuntimeClip(
+                            ctx.scene,
+                            source_clip,
+                            ctx.skeleton_build,
+                            ctx.source_to_engine,
+                            ctx.model_directory
+                        ))
+                    {
+                        SP_LOG_ERROR(
+                            "ModelImporter: failed to cook animation clip '%s' for '%s'",
+                            source_clip.name.c_str(),
+                            ctx.model_name.c_str()
+                        );
+                        cleanup_on_failure();
+                        return false;
+                    }
+                }
+            }
+
             // update progress tracking
             const uint32_t job_count = compute_node_count(ctx.scene->mRootNode);
             ProgressTracker::GetProgress(ProgressType::ModelImporter).Start(job_count, "Parsing model...");
 
             // recursively parse nodes
-            ParseNode(ctx, ctx.scene->mRootNode);
+            if (!ParseNode(ctx, ctx.scene->mRootNode))
+            {
+                SP_LOG_ERROR("ModelImporter: failed to parse scene nodes for '%s'", ctx.model_name.c_str());
+                cleanup_on_failure();
+                return false;
+            }
 
             // update model geometry
             {
@@ -596,6 +697,60 @@ namespace spartan
                 ctx.mesh->CreateGpuBuffers();
             }
 
+            if (ctx.has_skinning)
+            {
+                if (!ctx.skeleton_build.skeleton)
+                {
+                    SP_LOG_ERROR("ModelImporter: skinned asset '%s' is missing a cooked skeleton", ctx.model_name.c_str());
+                    cleanup_on_failure();
+                    return false;
+                }
+
+                if (ctx.cooked_skinned_submeshes.empty())
+                {
+                    SP_LOG_ERROR("ModelImporter: skinned asset '%s' produced no cooked skinned sub-meshes", ctx.model_name.c_str());
+                    cleanup_on_failure();
+                    return false;
+                }
+
+                SkeletalMeshBinding binding;
+                if (!animation_cooker::BuildSkeletalMeshBinding(ctx.scene, ctx.cooked_skinned_submeshes, ctx.skeleton_build, binding))
+                {
+                    SP_LOG_ERROR("ModelImporter: failed to build skeletal mesh binding for '%s'", ctx.model_name.c_str());
+                    cleanup_on_failure();
+                    return false;
+                }
+
+                if (!binding.IsValid())
+                {
+                    SP_LOG_ERROR("ModelImporter: failed to build skeletal mesh binding for '%s' (binding invalid)", ctx.model_name.c_str());
+                    cleanup_on_failure();
+                    return false;
+                }
+
+                for (const animation_cooker::CookedSkinnedSubMesh& cooked_submesh : ctx.cooked_skinned_submeshes)
+                {
+                    animation_cooker::ValidateSourceBoneMappingOffsets(
+                        ctx.scene,
+                        cooked_submesh,
+                        ctx.skeleton_build,
+                        ctx.source_to_engine
+                    );
+                }
+                for (auto& cooked_submesh : ctx.cooked_skinned_submeshes)
+                {
+                    cooked_submesh.source_vertex_remap.clear();
+                    cooked_submesh.source_vertex_remap.shrink_to_fit();
+                }
+                ctx.mesh->SetSkeletalMeshBinding(std::make_unique<SkeletalMeshBinding>(std::move(binding)));
+            }
+            else if (!ctx.cooked_skinned_submeshes.empty())
+            {
+                SP_LOG_ERROR("ModelImporter: asset '%s' produced skinned sub-mesh data without skinning classification", ctx.model_name.c_str());
+                cleanup_on_failure();
+                return false;
+            }
+
             // make the root entity active since it's now thread-safe
             ctx.mesh->GetRootEntity()->SetActive(true);
         }
@@ -603,15 +758,19 @@ namespace spartan
         {
             ProgressTracker::GetProgress(ProgressType::ModelImporter).JobDone();
             SP_LOG_ERROR("%s", importer.GetErrorString());
+            cleanup_on_failure();
+            return false;
         }
 
         importer.FreeScene();
+        return true;
     }
 
-    void ModelImporter::ParseNode(ImportContext& ctx, const aiNode* node, Entity* parent_entity)
+    bool ModelImporter::ParseNode(ImportContext& ctx, const aiNode* node, Entity* parent_entity)
     {
         // create an entity that will match this node
         Entity* entity = World::CreateEntity();
+        ctx.created_entities.push_back(entity);
 
         // set root entity to mesh
         const bool is_root_node = parent_entity == nullptr;
@@ -637,7 +796,8 @@ namespace spartan
         // mesh components
         if (node->mNumMeshes > 0)
         {
-            ParseNodeMeshes(ctx, node, entity);
+            if (!ParseNodeMeshes(ctx, node, entity))
+                return false;
         }
 
         // light component
@@ -649,14 +809,16 @@ namespace spartan
         // children nodes
         for (uint32_t i = 0; i < node->mNumChildren; i++)
         {
-            ParseNode(ctx, node->mChildren[i], entity);
+            if (!ParseNode(ctx, node->mChildren[i], entity))
+                return false;
         }
 
         // update progress tracking
         ProgressTracker::GetProgress(ProgressType::ModelImporter).JobDone();
+        return true;
     }
 
-    void ModelImporter::ParseNodeMeshes(ImportContext& ctx, const aiNode* assimp_node, Entity* node_entity)
+    bool ModelImporter::ParseNodeMeshes(ImportContext& ctx, const aiNode* assimp_node, Entity* node_entity)
     {
         SP_ASSERT_MSG(assimp_node->mNumMeshes != 0, "No meshes to process");
 
@@ -670,13 +832,16 @@ namespace spartan
             if (assimp_node->mNumMeshes > 1)
             {
                 entity = World::CreateEntity();
+                ctx.created_entities.push_back(entity);
                 entity->SetParent(node_entity);
                 node_name += "_" + to_string(i + 1);
             }
 
             entity->SetObjectName(node_name);
-            ParseMesh(ctx, node_mesh, entity);
+            if (!ParseMesh(ctx, node_mesh, entity))
+                return false;
         }
+        return true;
     }
 
     void ModelImporter::ParseNodeLight(ImportContext& ctx, const aiNode* node, Entity* new_entity)
@@ -720,7 +885,7 @@ namespace spartan
         }
     }
 
-    void ModelImporter::ParseMesh(ImportContext& ctx, aiMesh* assimp_mesh, Entity* entity_parent)
+    bool ModelImporter::ParseMesh(ImportContext& ctx, aiMesh* assimp_mesh, Entity* entity_parent)
     {
         SP_ASSERT(assimp_mesh != nullptr);
         SP_ASSERT(entity_parent != nullptr);
@@ -733,8 +898,42 @@ namespace spartan
         process_indices_parallel(assimp_mesh, indices);
 
         // add vertex and index data to the mesh
+        const bool mesh_has_skinning = mesh_has_skinning_weights(assimp_mesh);
+
         uint32_t sub_mesh_index = 0;
-        ctx.mesh->AddGeometry(vertices, indices, true, &sub_mesh_index);
+        if (mesh_has_skinning)
+        {
+            std::vector<uint32_t> vertex_remap;
+            ctx.mesh->AddGeometry(vertices, indices, false, &sub_mesh_index, &vertex_remap);
+
+            animation_cooker::CookedSkinnedSubMesh cooked;
+            const auto mesh_it = std::find(ctx.scene->mMeshes, ctx.scene->mMeshes + ctx.scene->mNumMeshes, assimp_mesh);
+            if (mesh_it == ctx.scene->mMeshes + ctx.scene->mNumMeshes)
+            {
+                SP_LOG_ERROR("ModelImporter: failed to resolve source mesh index for skinned sub-mesh");
+                return false;
+            }
+
+            cooked.source_mesh_index = static_cast<uint32_t>(mesh_it - ctx.scene->mMeshes);
+            cooked.sub_mesh_index = sub_mesh_index;
+            cooked.vertex_input_offset = ctx.mesh->GetSubMesh(sub_mesh_index).lods[0].vertex_offset;
+            cooked.vertex_count = ctx.mesh->GetSubMesh(sub_mesh_index).lods[0].vertex_count;
+            cooked.source_vertex_remap = std::move(vertex_remap);
+
+            if (cooked.vertex_count == 0)
+            {
+                SP_LOG_ERROR(
+                    "ModelImporter: skinned sub-mesh '%s' produced zero vertices after cook",
+                    assimp_mesh->mName.C_Str()
+                );
+                return false;
+            }
+            ctx.cooked_skinned_submeshes.push_back(std::move(cooked));
+        }
+        else
+        {
+            ctx.mesh->AddGeometry(vertices, indices, true, &sub_mesh_index);
+        }
 
         // set the geometry
         entity_parent->AddComponent<Render>()->SetMesh(ctx.mesh, sub_mesh_index);
@@ -752,5 +951,7 @@ namespace spartan
             // add a renderable and set the material to it
             entity_parent->AddComponent<Render>()->SetMaterial(material);
         }
+
+        return true;
     }
 }

@@ -112,6 +112,7 @@ namespace spartan
         clip.joint_count = header.joint_count;
         clip.duration_seconds = header.duration_seconds;
         clip.sample_rate = header.sample_rate;
+        clip.sample_count = header.sample_count;
 
         if (!read_track_stream(reader, clip.position_stream, header.position_channel_count, header.constant_position_count, header.position_sample_count) ||
             !read_track_stream(reader, clip.rotation_stream, header.rotation_channel_count, header.constant_rotation_count, header.rotation_sample_count) ||

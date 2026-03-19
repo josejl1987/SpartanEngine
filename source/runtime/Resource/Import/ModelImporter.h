@@ -41,12 +41,12 @@ namespace spartan
     {
     public:
         static void Initialize();
-        static void Load(Mesh* mesh, const std::string& file_path);
+        static bool Load(Mesh* mesh, const std::string& file_path);
 
     private:
-        static void ParseNode(ImportContext& ctx, const aiNode* node, Entity* parent_entity = nullptr);
-        static void ParseNodeMeshes(ImportContext& ctx, const aiNode* node, Entity* new_entity);
+        static bool ParseNode(ImportContext& ctx, const aiNode* node, Entity* parent_entity = nullptr);
+        static bool ParseNodeMeshes(ImportContext& ctx, const aiNode* node, Entity* new_entity);
         static void ParseNodeLight(ImportContext& ctx, const aiNode* node, Entity* new_entity);
-        static void ParseMesh(ImportContext& ctx, aiMesh* mesh, Entity* entity_parent);
+        static bool ParseMesh(ImportContext& ctx, aiMesh* mesh, Entity* entity_parent);
     };
 }

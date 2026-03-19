@@ -42,7 +42,7 @@ namespace spartan
     class RHI_Buffer;
     class RHI_AccelerationStructure;
     class RHI_CommandList;
-    class Skeleton;
+    struct Skeleton;
 
     enum class MeshFlags : uint32_t
     {
@@ -97,7 +97,13 @@ namespace spartan
         void GetGeometry(uint32_t sub_mesh_index, std::vector<uint32_t>* indices, std::vector<RHI_Vertex_PosTexNorTan>* vertices);
         uint32_t GetMemoryUsage() const;
         void AddLod(std::vector<RHI_Vertex_PosTexNorTan>& vertices, std::vector<uint32_t>& indices, const uint32_t sub_mesh_index);
-        void AddGeometry(std::vector<RHI_Vertex_PosTexNorTan>& vertices, std::vector<uint32_t>& indices, const bool generate_lods, uint32_t* sub_mesh_index = nullptr);
+        void AddGeometry(
+            std::vector<RHI_Vertex_PosTexNorTan>& vertices,
+            std::vector<uint32_t>& indices,
+            const bool generate_lods,
+            uint32_t* sub_mesh_index = nullptr,
+            std::vector<uint32_t>* out_vertex_remap = nullptr
+        );
         std::vector<RHI_Vertex_PosTexNorTan>& GetVertices()   { return m_vertices; }
         std::vector<uint32_t>& GetIndices()                   { return m_indices; }
         const SubMesh& GetSubMesh(const uint32_t index) const { return m_sub_meshes[index]; }

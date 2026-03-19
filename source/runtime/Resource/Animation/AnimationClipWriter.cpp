@@ -41,6 +41,7 @@ namespace spartan
         header.joint_count = clip.joint_count;
         header.duration_seconds = clip.duration_seconds;
         header.sample_rate = clip.sample_rate;
+        header.sample_count = clip.sample_count;
         header.position_channel_count = static_cast<uint32_t>(clip.position_stream.channels.size());
         header.rotation_channel_count = static_cast<uint32_t>(clip.rotation_stream.channels.size());
         header.scale_channel_count = static_cast<uint32_t>(clip.scale_stream.channels.size());

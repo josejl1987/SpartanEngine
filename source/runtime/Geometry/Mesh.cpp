@@ -61,11 +61,22 @@ namespace spartan
 
     void Mesh::Clear()
     {
+        // clear all mesh-owned state (geometry, acceleration structures, skeletal state and root entity)
         m_indices.clear();
         m_indices.shrink_to_fit();
 
         m_vertices.clear();
         m_vertices.shrink_to_fit();
+
+        m_sub_meshes.clear();
+        m_sub_meshes.shrink_to_fit();
+
+        m_blas.clear();
+        m_blas.shrink_to_fit();
+
+        m_skeleton = nullptr;
+        m_skeletal_mesh_binding = nullptr;
+        m_root_entity = nullptr;
     }
 
     void Mesh::SaveToFile(const string& file_path)
@@ -135,7 +146,8 @@ namespace spartan
 
         if (FileSystem::IsSupportedModelFile(file_path)) // foreign
         {
-            ModelImporter::Load(this, file_path);
+            if (!ModelImporter::Load(this, file_path))
+                return;
         }
         else if (FileSystem::IsEngineMeshFile(file_path)) // native
         {
@@ -297,7 +309,12 @@ namespace spartan
         }
     }
 
-    void Mesh::AddGeometry(vector<RHI_Vertex_PosTexNorTan>& vertices, vector<uint32_t>& indices, const bool generate_lods, uint32_t* sub_mesh_index)
+    void Mesh::AddGeometry(
+        vector<RHI_Vertex_PosTexNorTan>& vertices,
+        vector<uint32_t>& indices,
+        const bool generate_lods,
+        uint32_t* sub_mesh_index,
+        std::vector<uint32_t>* out_vertex_remap)
     {
         // create a sub-mesh
         SubMesh sub_mesh;
@@ -309,7 +326,12 @@ namespace spartan
             // optimize original geometry if flagged
             if (m_flags & static_cast<uint32_t>(MeshFlags::PostProcessOptimize))
             {
-                geometry_processing::optimize(vertices, indices);
+                geometry_processing::optimize(vertices, indices, out_vertex_remap);
+            }
+            else if (out_vertex_remap)
+            {
+                out_vertex_remap->resize(vertices.size());
+                std::iota(out_vertex_remap->begin(), out_vertex_remap->end(), 0u);
             }
 
             // add the original geometry as lod 0

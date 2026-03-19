@@ -25,7 +25,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "Quaternion.h"
 #include "Vector3.h"
 #include "Vector4.h"
+#include <algorithm>
+#include <cmath>
 #include <immintrin.h>
+#include <limits>
 //=====================
 
 namespace spartan::math
@@ -685,6 +688,47 @@ namespace spartan::math
         }
 
         [[nodiscard]] const float* Data() const { return &m00; }
+        [[nodiscard]] bool IsFinite() const
+        {
+        #if defined(__AVX2__)
+            const __m256 sign_mask = _mm256_set1_ps(-0.0f);
+            const __m256 max_value = _mm256_set1_ps(std::numeric_limits<float>::max());
+
+            const __m256 values0 = _mm256_loadu_ps(Data() + 0);
+            const __m256 values1 = _mm256_loadu_ps(Data() + 8);
+
+            const __m256 abs0 = _mm256_andnot_ps(sign_mask, values0);
+            const __m256 abs1 = _mm256_andnot_ps(sign_mask, values1);
+
+            const __m256 cmp0 = _mm256_cmp_ps(abs0, max_value, _CMP_LE_OQ);
+            const __m256 cmp1 = _mm256_cmp_ps(abs1, max_value, _CMP_LE_OQ);
+            return _mm256_movemask_ps(cmp0) == 0xFF && _mm256_movemask_ps(cmp1) == 0xFF;
+        #else
+            const float* data = Data();
+            for (unsigned int i = 0; i < 16; ++i)
+            {
+                if (!std::isfinite(data[i]))
+                    return false;
+            }
+
+            return true;
+        #endif
+        }
+
+        [[nodiscard]] bool IsCloseToIdentity(const float epsilon) const
+        {
+            return IsClose(Identity, epsilon);
+        }
+
+        [[nodiscard]] bool IsClose(const Matrix& rhs, const float epsilon) const
+        {
+            const float* left  = Data();
+            const float* right = rhs.Data();
+            return std::equal(left, left + 16, right, [epsilon](const float a, const float b)
+            {
+                return std::abs(a - b) <= epsilon;
+            });
+        }
         [[nodiscard]] std::string ToString() const;
 
         float m00 = 0.0f, m10 = 0.0f, m20 = 0.0f, m30 = 0.0f;

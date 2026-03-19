@@ -36,6 +36,7 @@ namespace spartan
         return write_array(stream, skeleton.parent_indices)
             && write_array(stream, skeleton.bind_positions)
             && write_array(stream, skeleton.bind_rotations)
-            && write_array(stream, skeleton.bind_scales);
+            && write_array(stream, skeleton.bind_scales)
+            && write_array(stream, skeleton.inverse_bind_matrices);
     }
 }

@@ -203,22 +203,43 @@ namespace spartan::geometry_processing
         vertices.assign(optimized_vertices.begin(), optimized_vertices.begin() + optimized_vertex_count);
     }
 
-    static void optimize(std::vector<RHI_Vertex_PosTexNorTan>& vertices, std::vector<uint32_t>& indices)
+    static void optimize(
+        std::vector<RHI_Vertex_PosTexNorTan>& vertices,
+        std::vector<uint32_t>& indices,
+        std::vector<uint32_t>* out_vertex_remap = nullptr
+    )
     {
-        size_t vertex_count = vertices.size();
+        const size_t original_vertex_count = vertices.size();
+        size_t vertex_count = original_vertex_count;
         size_t index_count  = indices.size();
+        std::vector<unsigned int> source_to_dedup;
+        if (out_vertex_remap)
+        {
+            source_to_dedup.resize(original_vertex_count);
+            std::fill(source_to_dedup.begin(), source_to_dedup.end(), ~0u);
+        }
     
         // step 1: vertex remapping
         {
-            std::vector<unsigned int> remap(vertex_count);
-            size_t vertex_count_optimized = meshopt_generateVertexRemap(remap.data(), indices.data(), index_count, vertices.data(), vertex_count, sizeof(RHI_Vertex_PosTexNorTan));
+            std::vector<unsigned int> local_remap;
+            unsigned int* remap_data = nullptr;
+            if (out_vertex_remap)
+            {
+                remap_data = source_to_dedup.data();
+            }
+            else
+            {
+                local_remap.resize(vertex_count);
+                remap_data = local_remap.data();
+            }
+            size_t vertex_count_optimized = meshopt_generateVertexRemap(remap_data, indices.data(), index_count, vertices.data(), vertex_count, sizeof(RHI_Vertex_PosTexNorTan));
     
             std::vector<uint32_t> indices_remapped(index_count);
-            meshopt_remapIndexBuffer(indices_remapped.data(), indices.data(), index_count, remap.data());
+            meshopt_remapIndexBuffer(indices_remapped.data(), indices.data(), index_count, remap_data);
             indices = std::move(indices_remapped);
     
             std::vector<RHI_Vertex_PosTexNorTan> vertices_remapped(vertex_count_optimized);
-            meshopt_remapVertexBuffer(vertices_remapped.data(), vertices.data(), vertex_count, sizeof(RHI_Vertex_PosTexNorTan), remap.data());
+            meshopt_remapVertexBuffer(vertices_remapped.data(), vertices.data(), vertex_count, sizeof(RHI_Vertex_PosTexNorTan), remap_data);
             vertices     = std::move(vertices_remapped);
             vertex_count = vertex_count_optimized;
         }
@@ -272,7 +293,52 @@ namespace spartan::geometry_processing
         meshopt_optimizeOverdraw(indices.data(), indices.data(), index_count, &vertices[0].pos[0], vertex_count, sizeof(RHI_Vertex_PosTexNorTan), 1.05f);
     
         // step 5: vertex fetch optimization
-        meshopt_optimizeVertexFetch(vertices.data(), indices.data(), index_count, vertices.data(), vertex_count, sizeof(RHI_Vertex_PosTexNorTan));
+        std::vector<unsigned int> fetch_remap;
+        if (out_vertex_remap)
+        {
+            fetch_remap.resize(vertex_count);
+            const size_t optimized_vertex_count = meshopt_optimizeVertexFetchRemap(fetch_remap.data(), indices.data(), index_count, vertex_count);
+
+            std::vector<uint32_t> indices_remapped(index_count);
+            meshopt_remapIndexBuffer(indices_remapped.data(), indices.data(), index_count, fetch_remap.data());
+            indices = std::move(indices_remapped);
+
+            std::vector<RHI_Vertex_PosTexNorTan> vertices_remapped(optimized_vertex_count);
+            meshopt_remapVertexBuffer(vertices_remapped.data(), vertices.data(), vertex_count, sizeof(RHI_Vertex_PosTexNorTan), fetch_remap.data());
+            vertices = std::move(vertices_remapped);
+            vertex_count = optimized_vertex_count;
+        }
+        else
+        {
+            std::vector<RHI_Vertex_PosTexNorTan> optimized_vertices(vertex_count);
+            const size_t optimized_vertex_count = meshopt_optimizeVertexFetch(
+                optimized_vertices.data(),
+                indices.data(),
+                index_count,
+                vertices.data(),
+                vertex_count,
+                sizeof(RHI_Vertex_PosTexNorTan)
+            );
+
+            optimized_vertices.resize(optimized_vertex_count);
+            vertices = std::move(optimized_vertices);
+            vertex_count = optimized_vertex_count;
+        }
+
+        if (out_vertex_remap)
+        {
+            out_vertex_remap->assign(original_vertex_count, ~0u);
+            for (size_t i = 0; i < original_vertex_count; ++i)
+            {
+                const unsigned int dedup_index = source_to_dedup[i];
+                if (dedup_index == ~0u || dedup_index >= fetch_remap.size())
+                    continue;
+
+                const unsigned int final_index = fetch_remap[dedup_index];
+                if (final_index != ~0u)
+                    (*out_vertex_remap)[i] = final_index;
+            }
+        }
     }
 
     static void split_surface_into_tiles(

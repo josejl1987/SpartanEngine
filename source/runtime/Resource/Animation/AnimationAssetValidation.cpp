@@ -22,6 +22,7 @@ SOFTWARE.
 
 //= INCLUDES ================================
 #include "pch.h"
+#include <string>
 #include "AnimationAssetValidation.h"
 #include "BinaryIO.h"
 #include "AnimationLimits.h"
@@ -243,13 +244,14 @@ namespace spartan
         if (!validate_pose_arrays(bind_positions, bind_rotations, bind_scales, bone_count, true))
             return fail(error, "Skeleton bind pose contains invalid values");
 
+        // Bones are stored in topological order; bone 0 must be a root.
         if (parents[0] != -1)
-            return fail(error, "Skeleton root joint must be stored at index 0");
+            return fail(error, "Skeleton root bone must have parent index -1");
 
-        for (uint32_t bone = 1; bone < bone_count; ++bone)
+        for (uint32_t bone = 0; bone < bone_count; ++bone)
         {
             const int16_t parent = parents[bone];
-            if (parent < 0 || parent >= static_cast<int16_t>(bone))
+            if (parent < -1 || parent >= static_cast<int16_t>(bone))
                 return fail(error, "Skeleton parent index is invalid");
         }
 

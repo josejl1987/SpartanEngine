@@ -12,9 +12,9 @@ Copyright(c) 2015-2026 Panos Karabelas
 namespace spartan::animation_format
 {
     constexpr uint32_t clip_magic = 0x50494C43; // CLIP
-    constexpr uint32_t clip_version = 4;
+    constexpr uint32_t clip_version = 1;
     constexpr uint32_t skeleton_magic = 0x4C454B53; // SKEL
-    constexpr uint32_t skeleton_version = 2;
+    constexpr uint32_t skeleton_version = 1;
 
     struct ClipHeader
     {
@@ -24,6 +24,7 @@ namespace spartan::animation_format
         uint32_t joint_count = 0;
         float duration_seconds = 0.0f;
         float sample_rate = 0.0f;
+        uint32_t sample_count = 0;
 
         uint32_t position_channel_count = 0;
         uint32_t rotation_channel_count = 0;
@@ -42,7 +43,7 @@ namespace spartan::animation_format
     };
 
     static_assert(std::is_trivially_copyable_v<ClipHeader>);
-    static_assert(sizeof(ClipHeader) == 64);
+    static_assert(sizeof(ClipHeader) == 68);
 
     struct SkeletonHeader
     {

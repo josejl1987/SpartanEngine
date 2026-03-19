@@ -22,6 +22,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #pragma once
 
 //= INCLUDES =======
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include "Vector3.h"
 //==================
 
@@ -183,6 +186,39 @@ namespace spartan::math
             return quaternion.Normalized();
         }
 
+        static Quaternion Slerp(const Quaternion& a, const Quaternion& b, const float t)
+        {
+            Quaternion q0 = a;
+            Quaternion q1 = b;
+
+            float dot = Dot(q0, q1);
+            if (!std::isfinite(dot))
+                return q0;
+
+            if (dot < 0.0f)
+            {
+                q1 = -q1;
+                dot = -dot;
+            }
+
+            constexpr float linear_threshold = 0.9995f;
+            if (dot > linear_threshold)
+            {
+                Quaternion result = q0 * (1.0f - t) + q1 * t;
+                result.Normalize();
+                return result;
+            }
+
+            const float theta_0 = std::acos(std::clamp(dot, -1.0f, 1.0f));
+            const float sin_theta_0 = std::sin(theta_0);
+            if (theta_0 <= 1e-6f || sin_theta_0 <= 1e-6f)
+                return Lerp(q0, q1, t);
+
+            const float s0 = std::sin((1.0f - t) * theta_0) / sin_theta_0;
+            const float s1 = std::sin(t * theta_0) / sin_theta_0;
+            return q0 * s0 + q1 * s1;
+        }
+
         static Quaternion Multiply(const Quaternion& Qa, const Quaternion& Qb)
         {
             const float x     = Qa.x;
@@ -208,12 +244,19 @@ namespace spartan::math
 
         auto Conjugate() const      { return Quaternion(-x, -y, -z, w); }
         float LengthSquared() const { return (x * x) + (y * y) + (z * z) + (w * w); }
+        bool IsFinite() const { return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) && std::isfinite(w); }
 
         // Normalizes the quaternion
         void Normalize()
         {
             const auto length_squared = LengthSquared();
-            if (!approximate_equals(length_squared, 1.0f) && length_squared > 0.0f)
+            if (!std::isfinite(length_squared) || length_squared <= 1e-12f)
+            {
+                *this = Identity;
+                return;
+            }
+
+            if (!approximate_equals(length_squared, 1.0f))
             {
                 const auto length_inverted = 1.0f / sqrt(length_squared);
                 x *= length_inverted;
@@ -226,15 +269,18 @@ namespace spartan::math
         Quaternion Normalized() const
         {
             const auto length_squared = LengthSquared();
-            if (!approximate_equals(length_squared, 1.0f) && length_squared > 0.0f)
+            if (!std::isfinite(length_squared) || length_squared <= 1e-12f)
+            {
+                return Identity;
+            }
+
+            if (!approximate_equals(length_squared, 1.0f))
             {
                 const auto length_inverted = 1.0f / sqrt(length_squared);
                 return (*this) * length_inverted;
             }
-            else
-            {
-                return *this;
-            }
+
+            return *this;
         }
 
         Quaternion Inverse() const 

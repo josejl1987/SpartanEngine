@@ -50,7 +50,8 @@ namespace spartan
         if (!budget.AddArray(header.joint_count, sizeof(int16_t)) ||
             !budget.AddArray(header.joint_count, sizeof(math::Vector3)) ||
             !budget.AddArray(header.joint_count, sizeof(math::Quaternion)) ||
-            !budget.AddArray(header.joint_count, sizeof(math::Vector3)))
+            !budget.AddArray(header.joint_count, sizeof(math::Vector3)) ||
+            !budget.AddArray(header.joint_count, sizeof(math::Matrix)))
         {
             return false;
         }
@@ -60,7 +61,8 @@ namespace spartan
         if (!read_array(reader, skeleton.parent_indices, header.joint_count) ||
             !read_array(reader, skeleton.bind_positions, header.joint_count) ||
             !read_array(reader, skeleton.bind_rotations, header.joint_count) ||
-            !read_array(reader, skeleton.bind_scales, header.joint_count))
+            !read_array(reader, skeleton.bind_scales, header.joint_count) ||
+            !read_array(reader, skeleton.inverse_bind_matrices, header.joint_count))
         {
             return false;
         }

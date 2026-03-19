@@ -23,6 +23,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 //= INCLUDES =========
 #include "../../Math/Matrix.h"
+#include "../../Memory/Allocator.h"
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -48,15 +51,60 @@ namespace spartan
             }
         }
 
-        // Root joint is always 0.
+        void Allocate(const uint16_t in_joint_count)
+        {
+            Clear();
+            joint_count = in_joint_count;
+            if (joint_count == 0)
+                return;
+
+            std::array<std::size_t, 5> offsets = {};
+            std::size_t total_bytes = 0;
+
+            offsets[0] = total_bytes = AlignUp<int16_t>(total_bytes);
+            total_bytes += static_cast<std::size_t>(joint_count) * sizeof(int16_t);
+
+            offsets[1] = total_bytes = AlignUp<math::Vector3>(total_bytes);
+            total_bytes += static_cast<std::size_t>(joint_count) * sizeof(math::Vector3);
+
+            offsets[2] = total_bytes = AlignUp<math::Quaternion>(total_bytes);
+            total_bytes += static_cast<std::size_t>(joint_count) * sizeof(math::Quaternion);
+
+            offsets[3] = total_bytes = AlignUp<math::Vector3>(total_bytes);
+            total_bytes += static_cast<std::size_t>(joint_count) * sizeof(math::Vector3);
+
+            offsets[4] = total_bytes = AlignUp<math::Matrix>(total_bytes);
+            total_bytes += static_cast<std::size_t>(joint_count) * sizeof(math::Matrix);
+
+            constexpr std::size_t storage_alignment = std::max({ alignof(int16_t), alignof(math::Vector3), alignof(math::Quaternion), alignof(math::Matrix) });
+            m_storage.reset(static_cast<std::byte*>(Allocator::Allocate(total_bytes, storage_alignment)));
+
+            std::byte* storage = m_storage.get();
+            AssignSpan(storage, offsets[0], parent_indices, joint_count);
+            AssignSpan(storage, offsets[1], bind_positions, joint_count);
+            AssignSpan(storage, offsets[2], bind_rotations, joint_count);
+            AssignSpan(storage, offsets[3], bind_scales, joint_count);
+            AssignSpan(storage, offsets[4], inverse_bind_matrices, joint_count);
+        }
+
+        // Bones are stored in topological order so parents always come before children.
         uint16_t joint_count = 0;
 
         std::span<int16_t> parent_indices;
         std::span<math::Vector3> bind_positions;
         std::span<math::Quaternion> bind_rotations;
         std::span<math::Vector3> bind_scales;
+        std::span<math::Matrix> inverse_bind_matrices;
 
     private:
+        struct StorageDeleter
+        {
+            void operator()(std::byte* ptr) const
+            {
+                Allocator::Free(ptr);
+            }
+        };
+
         friend class SkeletonReader;
 
         void Clear()
@@ -67,6 +115,7 @@ namespace spartan
             bind_positions = std::span<math::Vector3>{};
             bind_rotations = std::span<math::Quaternion>{};
             bind_scales = std::span<math::Vector3>{};
+            inverse_bind_matrices = std::span<math::Matrix>{};
         }
 
         template <typename T>
@@ -77,41 +126,12 @@ namespace spartan
             return remainder == 0 ? offset : offset + (alignment - remainder);
         }
 
-        void Allocate(const uint16_t in_joint_count)
-        {
-            Clear();
-            joint_count = in_joint_count;
-            if (joint_count == 0)
-                return;
-
-            std::size_t total_bytes = 0;
-            total_bytes = AlignUp<int16_t>(total_bytes) + static_cast<std::size_t>(joint_count) * sizeof(int16_t);
-            total_bytes = AlignUp<math::Vector3>(total_bytes) + static_cast<std::size_t>(joint_count) * sizeof(math::Vector3);
-            total_bytes = AlignUp<math::Quaternion>(total_bytes) + static_cast<std::size_t>(joint_count) * sizeof(math::Quaternion);
-            total_bytes = AlignUp<math::Vector3>(total_bytes) + static_cast<std::size_t>(joint_count) * sizeof(math::Vector3);
-
-            m_storage = std::make_unique<std::byte[]>(total_bytes);
-
-            std::byte* cursor = m_storage.get();
-            AssignSpan(cursor, parent_indices, joint_count);
-            AssignSpan(cursor, bind_positions, joint_count);
-            AssignSpan(cursor, bind_rotations, joint_count);
-            AssignSpan(cursor, bind_scales, joint_count);
-        }
-
         template <typename T>
-        static void AssignSpan(std::byte*& cursor, std::span<T>& out_span, const uint16_t count)
+        static void AssignSpan(std::byte* storage, const std::size_t offset, std::span<T>& out_span, const uint16_t count)
         {
-            const std::size_t alignment = alignof(T);
-            const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(cursor);
-            const std::size_t misalignment = address % alignment;
-            if (misalignment != 0)
-                cursor += alignment - misalignment;
-
-            out_span = std::span<T>(reinterpret_cast<T*>(cursor), count);
-            cursor += static_cast<std::size_t>(count) * sizeof(T);
+            out_span = std::span<T>(reinterpret_cast<T*>(storage + offset), count);
         }
 
-        std::unique_ptr<std::byte[]> m_storage;
+        std::unique_ptr<std::byte, StorageDeleter> m_storage;
     };
 }
