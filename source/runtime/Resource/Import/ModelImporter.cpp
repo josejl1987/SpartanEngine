@@ -32,6 +32,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "../../World/World.h"
 #include "../../World/Entity.h"
 #include "../../World/Components/Light.h"
+#include "../../World/Components/Animator.h"
 #include "../../Resource/ResourceCache.h"
 #include <algorithm>
 SP_WARNINGS_OFF
@@ -61,6 +62,7 @@ namespace spartan
         Matrix source_to_engine = Matrix::Identity;
         animation_cooker::SkeletonBuildResult skeleton_build;
         std::vector<animation_cooker::CookedSkinnedSubMesh> cooked_skinned_submeshes;
+        std::vector<std::shared_ptr<AnimationClip>> cooked_clips;
         bool has_skeleton_data = false;
         bool has_animations    = false;
         bool has_skinning      = false;
@@ -655,13 +657,17 @@ namespace spartan
 
                 for (const animation_cooker::SourceAnimationClip& source_clip : source_clips)
                 {
-                    if (!animation_cooker::CookRuntimeClip(
+                    if (std::unique_ptr<AnimationClip> clip = animation_cooker::CookRuntimeClip(
                             ctx.scene,
                             source_clip,
                             ctx.skeleton_build,
                             ctx.source_to_engine,
                             ctx.model_directory
                         ))
+                    {
+                        ctx.cooked_clips.push_back(std::move(clip));
+                    }
+                    else
                     {
                         SP_LOG_ERROR(
                             "ModelImporter: failed to cook animation clip '%s' for '%s'",
@@ -749,6 +755,23 @@ namespace spartan
                 SP_LOG_ERROR("ModelImporter: asset '%s' produced skinned sub-mesh data without skinning classification", ctx.model_name.c_str());
                 cleanup_on_failure();
                 return false;
+            }
+
+            // setup animator only when we have a skeleton and at least one cooked clip
+            if (ctx.skeleton_build.skeleton && !ctx.cooked_clips.empty())
+            {
+                if (Entity* root = ctx.mesh->GetRootEntity())
+                {
+                    Animator* animator = root->GetComponent<Animator>();
+                    if (!animator)
+                    {
+                        animator = root->AddComponent<Animator>();
+                    }
+
+                    animator->SetSkeleton(ctx.skeleton_build.skeleton);
+                    animator->SetAnimationClips(ctx.cooked_clips, 0);
+                    animator->Play();
+                }
             }
 
             // make the root entity active since it's now thread-safe

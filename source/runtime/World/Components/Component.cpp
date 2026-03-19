@@ -32,6 +32,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "Volume.h"
 #include "ParticleSystem.h"
 #include "SplineFollower.h"
+#include "Animator.h"
 //=========================
 
 //= NAMESPACES =====

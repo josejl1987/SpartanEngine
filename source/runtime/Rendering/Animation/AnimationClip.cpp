@@ -22,6 +22,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //= INCLUDES ====================
 #include "pch.h"
 #include "AnimationClip.h"
+#include "AnimationSamplingCommon.h"
 //===============================
 
 namespace spartan
@@ -33,60 +34,41 @@ namespace spartan
         SP_ASSERT(base_local_rotations.size() == joint_count);
         SP_ASSERT(base_local_scales.size() == joint_count);
 
-        thread_local std::vector<math::Vector3> pos;
-        thread_local std::vector<math::Quaternion> rot;
-        thread_local std::vector<math::Vector3> scl;
+        if (joint_count == 0)
+            return;
 
-        pos.resize(joint_count);
-        rot.resize(joint_count);
-        scl.resize(joint_count);
+        const float clamped_time = std::clamp(time_seconds, 0.0f, duration_seconds);
+        const float sample_position = std::max(clamped_time * sample_rate, 0.0f);
+        const uint32_t sample_index = static_cast<uint32_t>(sample_position);
+        const float alpha = sample_position - static_cast<float>(sample_index);
 
-        std::copy(base_local_positions.begin(), base_local_positions.end(), pos.begin());
-        std::copy(base_local_rotations.begin(), base_local_rotations.end(), rot.begin());
-        std::copy(base_local_scales.begin(), base_local_scales.end(), scl.begin());
+        thread_local std::vector<math::Vector3> sampled_positions;
+        thread_local std::vector<math::Quaternion> sampled_rotations;
+        thread_local std::vector<math::Vector3> sampled_scales;
 
-        if (sample_count >= 2)
-        {
-            const float clamped_time = std::clamp(time_seconds, 0.0f, duration_seconds);
-            const float f            = clamped_time * sample_rate;
-            const uint32_t idx       = std::min(static_cast<uint32_t>(f), sample_count - 2);
-            const float alpha        = f - static_cast<float>(idx);
+        sampled_positions.assign(base_local_positions.begin(), base_local_positions.end());
+        sampled_rotations.assign(base_local_rotations.begin(), base_local_rotations.end());
+        sampled_scales.assign(base_local_scales.begin(), base_local_scales.end());
 
-            for (const auto& c : scale_stream.channels)
-            {
-                scl[c.bone_index] = math::Vector3::Lerp(
-                    scale_stream.values[c.first_sample + idx],
-                    scale_stream.values[c.first_sample + idx + 1],
-                    alpha
-                );
-            }
+        animation_runtime::ApplyConstantChannels(position_stream.constants, sampled_positions, joint_count);
+        animation_runtime::ApplyConstantChannels(rotation_stream.constants, sampled_rotations, joint_count);
+        animation_runtime::ApplyConstantChannels(scale_stream.constants, sampled_scales, joint_count);
 
-            for (const auto& c : rotation_stream.channels)
-            {
-                rot[c.bone_index] = math::Quaternion::Slerp(
-                    rotation_stream.values[c.first_sample + idx],
-                    rotation_stream.values[c.first_sample + idx + 1],
-                    alpha
-                );
-            }
+        animation_runtime::ApplySampledChannels(
+            position_stream.channels, position_stream.values, sampled_positions, joint_count, sample_index, alpha,
+            [](const math::Vector3& a, const math::Vector3& b, const float t) { return math::Vector3::Lerp(a, b, t); });
 
-            for (const auto& c : position_stream.channels)
-            {
-                pos[c.bone_index] = math::Vector3::Lerp(
-                    position_stream.values[c.first_sample + idx],
-                    position_stream.values[c.first_sample + idx + 1],
-                    alpha
-                );
-            }
-        }
+        animation_runtime::ApplySampledChannels(
+            rotation_stream.channels, rotation_stream.values, sampled_rotations, joint_count, sample_index, alpha,
+            [](const math::Quaternion& a, const math::Quaternion& b, const float t) { return math::Quaternion::Slerp(a, b, t); });
 
-        for (const auto& c : scale_stream.constants)    scl[c.bone_index] = c.value;
-        for (const auto& c : rotation_stream.constants) rot[c.bone_index] = c.value;
-        for (const auto& c : position_stream.constants) pos[c.bone_index] = c.value;
+        animation_runtime::ApplySampledChannels(
+            scale_stream.channels, scale_stream.values, sampled_scales, joint_count, sample_index, alpha,
+            [](const math::Vector3& a, const math::Vector3& b, const float t) { return math::Vector3::Lerp(a, b, t); });
 
         for (uint32_t i = 0; i < joint_count; ++i)
         {
-            out[i] = math::Matrix(pos[i], rot[i], scl[i]);
+            out[i] = math::Matrix(sampled_positions[i], sampled_rotations[i], sampled_scales[i]);
         }
     }
 }
